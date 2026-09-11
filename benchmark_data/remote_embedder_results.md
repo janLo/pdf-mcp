@@ -11,8 +11,8 @@ real local server on the machine this whole investigation started on.
 | host | AMD Ryzen AI 9 HX PRO 375 (Strix Point), 24 threads, 62 GB RAM, integrated Radeon 890M (`gfx1150`, confirmed via `rocminfo`) |
 | server | `lemonade` v11.6.0, built locally at `/home/jan/devel/lemonade` (`build/lemond`), run as `./lemond --port 13305 --host 127.0.0.1 --no-broadcast` |
 | pdf-mcp | this branch, `feature/external-embedder`, unit tests green (`pytest tests/ -m "not slow"`: 1985 passed) |
-| models tested | `Qwen3-Embedding-0.6B-GGUF` (llamacpp/vulkan, 1024-dim) and `embed-gemma-300m-FLM` (FastFlowLM/NPU, 768-dim) |
-| method | `pdf_mcp.remote_embedder.encode()` called directly, and the full `pdf_mcp.embedder` -> config dispatch path, and the real `pdf-mcp-warm` CLI against 2 real PDFs from `pages/corpus/` |
+| models tested | `Qwen3-Embedding-0.6B-GGUF` (llamacpp, CPU + vulkan, 1024-dim), `bge-small-en-v1.5-q8_0.gguf` (llamacpp, CPU + vulkan, 384-dim, same weights fastembed defaults to), `embed-gemma-300m-FLM` (FastFlowLM/NPU, 768-dim) |
+| method | `pdf_mcp.remote_embedder.encode()` called directly (both against lemond's router and against `llama-server` binaries launched directly), the full `pdf_mcp.embedder` -> config dispatch path, and the real `pdf-mcp-warm` CLI against 2 real PDFs from `pages/corpus/` |
 
 ## Correctness -- full pipeline, real server, real PDFs
 
@@ -49,47 +49,61 @@ remote model in `docs/embedding-models.md`, not before shipping the
 opt-in mechanism.
 
 **Also not run: cosine vs. fastembed on the same model weights** (the
-MLX-study-style check). lemonade's llamacpp backend serves GGUF checkpoints;
-`bge-small-en-v1.5` is not in its catalogue as a GGUF, so a true
-same-weights comparison needs either a GGUF conversion of bge-small or a
-server that can serve it directly -- out of scope for this pass. The
-MLX finding (cosine 0.894 divergence from a pooling difference, same
-weights) is why the identity namespacing exists regardless of whether this
-specific pair could be measured.
+MLX-study-style check). `bge-small-en-v1.5` turned out to be obtainable as a
+GGUF after all (`ggml-org/bge-small-en-v1.5-Q8_0-GGUF`, downloaded directly
+from Hugging Face rather than through lemonade's catalogue -- see the
+Throughput section), so the vectors exist to run this comparison; the
+cosine-vs-fastembed check itself was not run in this pass. The MLX finding
+(cosine 0.894 divergence from a pooling difference, same weights) is why the
+identity namespacing exists regardless.
 
-## Throughput -- vulkan (iGPU) vs fastembed CPU, at varying concurrency
+## Throughput -- same-model CPU vs iGPU (Vulkan), via llama.cpp directly
 
+The first pass here (previous revision of this doc) compared
+`Qwen3-Embedding-0.6B` on the iGPU against `bge-small` on CPU -- an 18x
+model-size difference confounding the backend comparison. Redone properly:
+`llama-server` (both the `llamacpp/cpu` and `llamacpp/vulkan` binaries
+lemonade already ships) loaded directly, bypassing lemond's router (its
+`"backend"` request field was accepted but silently ignored -- see the
+note below), each serving the SAME two GGUF files on different ports, so
+model and framework are held constant and only the compute backend
+changes. `bge-small-en-v1.5-q8_0.gguf` is `ggml-org/bge-small-en-v1.5-Q8_0-GGUF`
+(the llama.cpp org's own quant of the exact model fastembed defaults to).
 64 synthetic passages (~30 words each), `remote_embedder.encode()` called
-directly to isolate the network+backend cost from pdf-mcp's own batching:
+directly, best-of-3 after a warmup call:
 
-| condition | time | throughput |
-|---|---|---|
-| remote, `Qwen3-Embedding-0.6B-GGUF` (vulkan/iGPU), concurrency=1 | 1.20s | 53.2 texts/s |
-| remote, concurrency=2 | 0.97s | 66.1 texts/s |
-| remote, concurrency=4 | 0.90s | 70.9 texts/s |
-| remote, concurrency=8 | 0.86s | 74.6 texts/s |
-| fastembed CPU, `bge-small-en-v1.5` | 0.37s | 170.8 texts/s |
+| model | CPU (llama.cpp) | Vulkan/iGPU (llama.cpp) | speedup |
+|---|---|---|---|
+| `bge-small-en-v1.5` (33M params, 384-dim) | 319 texts/s | 490-531 texts/s | **~1.5-1.7x** |
+| `Qwen3-Embedding-0.6B` (600M params, 1024-dim) | 23-24 texts/s | 72-75 texts/s | **~3.0-3.2x** |
 
-**Read this carefully -- it is not an iGPU-vs-CPU verdict.** `Qwen3-Embedding-0.6B`
-is an 18x larger model (600M params vs bge-small's 33M) than the CPU
-baseline; the comparison is confounded by model size, not backend. It does
-show two useful things: concurrency helps (53 -> 75 texts/s, 1.4x, plateauing
-by concurrency=4, consistent with 4 llama.cpp server slots — see `n_slots = 4`
-in the server log), and that a much larger, likely higher-quality model
-stays in the same order of magnitude as the tiny CPU default once network
-and iGPU are both in the loop -- i.e. the offload is fast enough to be
-useful, even though this pair doesn't prove the iGPU beats the CPU for
-one fixed model. A fair same-model CPU-vs-vulkan-vs-`gfx1150`(ROCm)
-comparison needs a GGUF small enough for lemonade's CPU backend, which is
-listed as "installable" but was not installed in this pass (see Follow-up).
+**The iGPU is a real, repeatable win on this machine, and the win grows with
+model size** -- the opposite of the original onnxruntime/CPU investigation,
+which found the shipped encode memory-bandwidth-bound (thread pinning gave
+no benefit, `docs/configuration.md`'s Apple Silicon note). The larger model
+is compute-bound enough that Vulkan offload triples throughput; the tiny
+default model still gains ~1.5x. Concurrency past 1 matters far less than
+the backend switch itself: both backends were near their per-request
+plateau by concurrency=4 (`n_slots = 4` in the llama-server log matches).
 
-The `therock/gfx1150-7.13.0` ROCm build present in lemonade's cache was
-not exercised: the loader's `"backend": "rocm"` request field was accepted
-(`HTTP 200`) but the server still launched `llamacpp/vulkan` regardless
-(confirmed via the actual process command line) -- selecting it needs
-either a lemonade config/env knob not found in this session, or a fresh
-model catalogue entry pinned to that recipe. Left as follow-up rather than
-worked around by guessing.
+For reference, `pdf_mcp.embedder.encode()` via fastembed/ONNX (the shipped
+CPU path, not llama.cpp) on the same 64 passages: 125 texts/s for
+`bge-small` -- faster than llama.cpp's CPU build of the same model (317
+vs 125 looks backwards; ONNX and llama.cpp use different batching/threading
+internally, and 125 texts/s is *slower* here, so read this as "different
+CPU implementations of the same model are not identical," not as a
+regression in either).
+
+**Not measured: `gfx1150` (ROCm), or the FastFlowLM/NPU path.** The
+`therock/gfx1150-7.13.0` ROCm build present in lemonade's cache was not
+exercised through `lemond`: the loader's `"backend": "rocm"` request field
+was accepted (`HTTP 200`) but the server still launched `llamacpp/vulkan`
+regardless (confirmed via the actual process command line). The raw
+`llamacpp/rocm-stable/llama-b10394/llama-server` binary exists and could be
+driven directly the same way the CPU/Vulkan comparison above was, but
+wasn't in this pass -- see Follow-up. This means the numbers above are a
+CPU-vs-Vulkan floor, not the ceiling: ROCm on the same `gfx1150` hardware
+would likely do better still.
 
 ## NPU path -- reproducibly broken in this session, not a pdf-mcp defect
 
@@ -123,25 +137,31 @@ exhaustively in `tests/test_remote_embedder.py`; this pass is the "does it
 actually work" check on top of that). The default (fastembed) path is
 provably unaffected.
 
-**Do not yet claim an NPU or iGPU speed win in docs/README.** The iGPU
-(vulkan) path works and is fast enough to be practically useful, but no
-same-model comparison was obtained to say it beats CPU for one fixed model,
-and the NPU path did not stay usable long enough to benchmark at all. This
+**The iGPU (Vulkan) path is now a demonstrated speed win, same-model,
+same-framework, repeatable across runs: ~1.5-1.7x on the tiny default-sized
+model, ~3.0-3.2x on a 600M-param model.** This is safe to state in
+docs/README now, scoped correctly (Vulkan via llama.cpp, not the shipped
+fastembed/ONNX CPU path, and not yet ROCm or NPU). No NPU number exists --
+the FastFlowLM path did not stay usable long enough to benchmark. This
 mirrors the honest-negative-result culture this repo already has
 (`docs/investigated-rejected.md`, the MLX and E5 studies) -- record what was
-actually measured, not what was hoped for.
+actually measured, not what was hoped for, positive or negative.
 
 ## Follow-up (not blocking this PR)
 
 - Run the formal MRR gate (`scripts/benchmark_embedding_models.py` harness)
   against a servable-via-lemonade model before recommending one by name in
   `docs/embedding-models.md`.
-- Install lemonade's `llamacpp:cpu` backend and re-run the throughput table
-  with the *same* model (e.g. `Qwen3-Embedding-0.6B-GGUF`) on CPU vs vulkan
-  vs (if selectable) `gfx1150`-ROCm, to get an apples-to-apples GPU-offload
-  number.
-- Work out how to pin lemonade to the `therock/gfx1150` ROCm backend rather
-  than its vulkan default, and re-run.
+- Run the cosine-vs-fastembed check now that a same-weights GGUF
+  (`ggml-org/bge-small-en-v1.5-Q8_0-GGUF`) is in hand -- both files already
+  downloaded in this session, just not diffed.
+- Drive `llamacpp/rocm-stable/llama-b10394/llama-server` directly (the same
+  way the CPU/Vulkan comparison above bypassed lemond's router) to get a
+  `gfx1150`-ROCm throughput number; likely faster than the Vulkan numbers
+  above, not slower.
 - Investigate the FastFlowLM/NPU `qds_device::wait()` failure (driver
   version, `amdxdna` module reload, or a lemonade issue report) to get a
   usable NPU throughput number.
+- Report the ignored `"backend"` field in lemond's `/api/v1/load` to the
+  lemonade project -- confirmed twice (`rocm` and `cpu` requests both
+  silently launched `vulkan`).

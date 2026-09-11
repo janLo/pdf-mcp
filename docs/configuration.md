@@ -210,9 +210,11 @@ Both default to empty (no prefix). Setting either changes the cache
 identity too, for the same re-embed-on-change reason as `base_url`/`model`.
 
 See `benchmark_data/remote_embedder_results.md` for a local validation run
-(correctness, throughput at varying `max_concurrency`) against lemonade on
-an AMD Ryzen AI machine, including honest gaps (no same-model CPU-vs-GPU
-throughput comparison yet, and the NPU path was unreliable in that session).
+against lemonade on an AMD Ryzen AI machine: correctness end-to-end, and a
+same-model CPU-vs-iGPU (Vulkan) comparison via llama.cpp showing ~1.5-1.7x
+on a small model and ~3.0-3.2x on a 600M-param model — a real, repeatable
+win, though not yet measured against ROCm or the NPU (unreliable in that
+session; a lemonade/driver issue, not this backend's code).
 
 ### Docker deployment notes
 
