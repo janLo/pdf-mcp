@@ -1006,7 +1006,9 @@ Reports which optional features are installed and which configuration values are
   - `extraction.ocr` — `{available, description}`. `available` reflects `shutil.which("tesseract")`. OCR is opt-in (`pdf_read_pages(ocr=True)`); no tool runs it automatically, and the description says so.
   - `search.modes_available` (array) — always includes `"keyword"`; includes `"semantic"` and `"auto"` only when `fastembed` is installed and the configured embedding model is valid.
   - `search.default_mode` (string) — `"auto"`.
-  - `search.embedding_model` (string, conditional) — present **only** when semantic search is available; omitted otherwise.
+  - `search.embedding_model` (string, conditional) — present **only** when semantic search is available; omitted otherwise. Under the external backend (see below) this is a cache-identity string, not a bare model name: `openai:<host>[:<port>]/<model>[@<prefix-hash>]`.
+  - `search.embedding_backend` (string, conditional) — `"fastembed"` (default) or `"openai"`; present alongside `embedding_model`.
+  - `search.embedding_endpoint` (string, conditional) — `host:port` of the configured server; present only when `embedding_backend` is `"openai"`. Never includes the API key.
   - `corpus.tools` (array) — the multi-document tools (`pdf_corpus_warm`, `pdf_corpus_overview`, `pdf_corpus_search`).
   - `corpus.max_files` (int) — corpus size cap (100).
   - `corpus.budget_seconds_range` (array) — clamp range for `budget_seconds` on the corpus tools (`[1, 300]`).
@@ -1099,6 +1101,8 @@ max_response_bytes = 200000   # default; clamped to [4_096, 2_000_000]
 [embedding]
 model = "BAAI/bge-small-en-v1.5"   # any fastembed-supported model
 ```
+
+An external OpenAI-compatible embedding server (lemonade, ollama, vLLM, ...) can replace fastembed entirely via `[embedding].backend = "openai"` — see [docs/configuration.md](configuration.md#external-embedding-backend-openai-compatible).
 
 Rules use shell-glob patterns (`*` matches across path separators). `deny` wins when both match. Path matching operates on the resolved path after symlink expansion. A malformed config file prevents the server from starting — it never silently falls back to permissive.
 

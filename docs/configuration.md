@@ -37,7 +37,9 @@ starting — it never silently falls back to permissive.
 section-granularity `pdf_search`; see [docs/response-limits.md](response-limits.md).
 
 **`[embedding]`** — the semantic-search model; the default shown above is
-`BAAI/bge-small-en-v1.5`. See [docs/embedding-models.md](embedding-models.md).
+`BAAI/bge-small-en-v1.5`. See [docs/embedding-models.md](embedding-models.md)
+and, for an alternative to the built-in fastembed backend, "External
+embedding backend (OpenAI-compatible)" below.
 
 **`[content_trust]`** — extends the hidden-text `injection_in_hidden` severity
 hint with your own (including non-English) phrases. They **extend** the built-in
@@ -151,6 +153,66 @@ faster than one large padded batch and holds about 0.7 GB of transient
 encode memory instead of 2.8 GB, with identical vectors. Thread pinning
 was measured on the same machine and does not help: one intra-op thread
 ran as fast as fourteen, so the encode is memory-bound, not compute-bound.
+
+### External embedding backend (OpenAI-compatible)
+
+Optional and off by default. Instead of the built-in fastembed/ONNX path,
+point pdf-mcp at any server that speaks the OpenAI `POST /v1/embeddings`
+schema: [lemonade](https://github.com/lemonade-sdk/lemonade) (AMD's own
+server — the way to reach a Ryzen AI NPU or integrated GPU on Linux, where
+there is no ONNX Runtime execution provider for either), ollama,
+`llama-server`, vLLM, OpenRouter, or OpenAI itself.
+
+```toml
+[embedding]
+backend  = "openai"
+base_url = "http://localhost:11434/v1"
+model    = "nomic-embed-text"
+api_key_env = "OPENROUTER_API_KEY"   # optional; the env var's NAME, never the key itself
+timeout = 60
+batch_size = 32
+max_concurrency = 4
+dimensions = 768                     # optional; validated against the server's response
+document_prefix = "search_document: "  # optional, see below
+query_prefix    = "search_query: "     # optional, see below
+```
+
+**The API key never goes in `config.toml`.** `api_key_env` names an
+environment variable; pdf-mcp reads the key from there at startup. Omit it
+for a local server that needs no auth.
+
+**Privacy: a non-loopback `base_url` sends your PDF text to that host.**
+There is no separate opt-in flag for this beyond setting `base_url` — a
+remote server necessarily receives every page/query text pdf-mcp embeds. Use
+a local server (`localhost`/`127.0.0.1`) unless you specifically intend to
+send content to a hosted provider.
+
+**Changing `base_url` or `model` re-embeds, on purpose.** The cache identity
+is `openai:<host>[:<port>]/<model>`, not just the bare model name: the same
+model name on a different server is not guaranteed to produce the same
+vectors (pooling and normalization choices are the server's, not pdf-mcp's —
+see `benchmark_data/mlx_backend_results.md` for a measured case of exactly
+this divergence between two *local* backends for the same weights), so an
+endpoint change is treated as a different vector space rather than reusing
+another backend's cached vectors. This matches the existing "switching
+models clears the embedding cache" behaviour in
+[docs/embedding-models.md](embedding-models.md).
+
+**`document_prefix` / `query_prefix`** apply an asymmetric instruction
+prefix to the document and query sides respectively (`encode()` vs
+`encode_query()`) — required by several models this backend makes reachable,
+not optional polish: `nomic-embed-text` is trained with `search_document:` /
+`search_query:`, and the Qwen3-Embedding family wants a query-side
+instruction prefix. Getting this wrong is not subtle — this repo's own
+benchmark found a related fastembed model collapsing to MRR 0.029 from a
+missing prefix protocol (see [docs/embedding-models.md](embedding-models.md)).
+Both default to empty (no prefix). Setting either changes the cache
+identity too, for the same re-embed-on-change reason as `base_url`/`model`.
+
+See `benchmark_data/remote_embedder_results.md` for a local validation run
+(correctness, throughput at varying `max_concurrency`) against lemonade on
+an AMD Ryzen AI machine, including honest gaps (no same-model CPU-vs-GPU
+throughput comparison yet, and the NPU path was unreliable in that session).
 
 ### Docker deployment notes
 

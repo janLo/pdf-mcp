@@ -1,6 +1,8 @@
 # Embedding Models
 
-pdf-mcp uses [`fastembed`](https://github.com/qdrant/fastembed) for local, offline embedding. The four models below are validated end-to-end against the project's arxiv benchmark corpus (see [Live Benchmark Results](#live-benchmark-results)). Any other model in the [fastembed TextEmbedding catalogue](https://qdrant.github.io/fastembed/examples/Supported_Models/) is accepted by the BYOM config, but is unvalidated — see the [Unvalidated section](#unvalidated-models) below for the gotchas we've already hit.
+By default, pdf-mcp uses [`fastembed`](https://github.com/qdrant/fastembed) for local, offline embedding. The four models below are validated end-to-end against the project's arxiv benchmark corpus (see [Live Benchmark Results](#live-benchmark-results)). Any other model in the [fastembed TextEmbedding catalogue](https://qdrant.github.io/fastembed/examples/Supported_Models/) is accepted by the BYOM config, but is unvalidated — see the [Unvalidated section](#unvalidated-models) below for the gotchas we've already hit.
+
+pdf-mcp can also be pointed at an external OpenAI-compatible embedding server (lemonade, ollama, vLLM, OpenRouter, ...) instead of fastembed — see [docs/configuration.md](configuration.md#external-embedding-backend-openai-compatible). That path is opt-in and unvalidated against this page's benchmark; none of the numbers below apply to it.
 
 ## Configuration
 
@@ -66,7 +68,7 @@ If you need any of these (long contexts, multilingual, larger English models), p
 
 - **MTEB scores** for BGE v1.5 models from their [HuggingFace model cards](https://huggingface.co/BAAI/bge-small-en-v1.5).
 - **Snowflake Arctic Embed** scores from [snowflake-arctic-embed-m](https://huggingface.co/Snowflake/snowflake-arctic-embed-m) and [-l](https://huggingface.co/Snowflake/snowflake-arctic-embed-l) model cards.
-- All validated models run fully locally via fastembed — no external API calls.
+- All validated models above run fully locally via fastembed — no external API calls. That is no longer true for every install: `[embedding].backend = "openai"` (opt-in, off by default) sends embedding text to whatever server `base_url` names — see [docs/configuration.md](configuration.md#external-embedding-backend-openai-compatible).
 
 ---
 

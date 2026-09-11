@@ -52,6 +52,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PDF_MCP_MAX_WORKERS` explicitly there. See
   [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md).
 
+- **`[embedding].backend = "openai"`: an external, OpenAI-compatible
+  embedding server as an alternative to the built-in fastembed path, off
+  by default.** One `POST /v1/embeddings` client covers lemonade (AMD's
+  own server — the way to reach a Ryzen AI NPU or integrated GPU on
+  Linux, where there is no ONNX Runtime execution provider for either),
+  ollama, `llama-server`, vLLM, OpenRouter, and OpenAI. Configure
+  `base_url`, `model`, and optionally `api_key_env` (the env var's
+  *name*; the key itself never touches `config.toml`), `timeout`,
+  `batch_size`, `max_concurrency` (requests are pipelined through a
+  bounded thread pool — HTTP is I/O-bound, unlike the local encode),
+  `dimensions`, and asymmetric `document_prefix`/`query_prefix` (required
+  by several models this makes reachable, e.g. nomic's
+  `search_document:`/`search_query:` convention — this repo's own
+  benchmark already recorded a related fastembed model collapsing to MRR
+  0.029 from a missing prefix protocol). The cache identity is
+  `openai:<host>[:<port>]/<model>[@<prefix-hash>]`, not the bare model
+  name: switching `base_url`, `model`, or either prefix re-embeds rather
+  than reusing another backend's vectors, since this repo's own
+  `benchmark_data/mlx_backend_results.md` already measured the *same*
+  model weights diverging at cosine 0.894 across two backends (a pooling
+  difference). The default (fastembed, unconfigured `[embedding]`) is
+  byte-for-byte unchanged. See
+  [docs/configuration.md](docs/configuration.md#external-embedding-backend-openai-compatible)
+  and
+  [benchmark_data/remote_embedder_results.md](benchmark_data/remote_embedder_results.md).
+
 - **Optional CUDA acceleration for embedding, off by default.** Set
   `PDF_MCP_CUDA=1` with the CUDA build of onnxruntime installed and the
   embedding pass runs on the GPU (one to two orders of magnitude faster on
