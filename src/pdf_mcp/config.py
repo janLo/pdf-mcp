@@ -8,11 +8,14 @@ Malformed file = ValueError at startup (never silently fall back to permissive).
 from __future__ import annotations
 
 import fnmatch
+import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .embedder import DEFAULT_MODEL
+from .remote_embedder import RemoteSpec, identity_for
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -24,6 +27,13 @@ _DEFAULT_CONFIG_PATH = Path.home() / ".config" / "pdf-mcp" / "config.toml"
 _DEFAULT_MAX_RESPONSE_BYTES = 200_000
 _MAX_RESPONSE_BYTES_CEILING = 2_000_000
 _MIN_RESPONSE_BYTES = 4_096
+
+# [embedding] defaults for the "openai" backend. Mirrors RemoteSpec's own
+# defaults so a config.toml that sets only backend/base_url/model still gets
+# sane behaviour.
+_DEFAULT_REMOTE_TIMEOUT = 60.0
+_DEFAULT_REMOTE_BATCH_SIZE = 32
+_DEFAULT_REMOTE_MAX_CONCURRENCY = 4
 
 
 class PDFConfig:
@@ -65,10 +75,158 @@ class PDFConfig:
             raise ValueError(f"Path not in allowed list: {path}")
 
     @property
+    def embedding_backend(self) -> str:
+        """``[embedding].backend``: "fastembed" (default) or "openai".
+
+        Any other value raises ValueError at property-access time (not at
+        load time -- this module never touches [embedding] eagerly, matching
+        the lazy-property style of the rest of this class).
+        """
+        backend = self._data.get("embedding", {}).get("backend", "fastembed")
+        if backend not in ("fastembed", "openai"):
+            raise ValueError(
+                f"[embedding].backend must be 'fastembed' or 'openai', got "
+                f"{backend!r}"
+            )
+        return str(backend)
+
+    @property
     def embedding_model(self) -> str:
-        """Return configured embedding model, or the default bge-small model."""
-        model: str = self._data.get("embedding", {}).get("model", DEFAULT_MODEL)
-        return model
+        """
+        The embedding identity string that keys the vector cache
+        (cache.py's page_embeddings/doc_profiles ``model`` column) and is
+        passed to every embedder.py call.
+
+        fastembed backend (default): the bare model name, e.g.
+        'BAAI/bge-small-en-v1.5' -- byte-identical to every pre-existing
+        install, so no cache is invalidated by this feature shipping.
+
+        openai backend: 'openai:<host>[:<port>]/<model>[@<prefix-hash>]'.
+        Host/port are part of the identity deliberately -- this repo's own
+        benchmark_data/mlx_backend_results.md measured the SAME model
+        weights diverging at cosine 0.894 across two backends (a pooling
+        difference), so an endpoint change must be treated as a different
+        vector space, not just a different label. The prefix hash is
+        appended only when document_prefix/query_prefix are set, for the
+        same reason: prepending "search_document: " changes what gets
+        embedded, so editing that prefix must re-embed rather than mix
+        prefixed and unprefixed vectors under one identity. The API key is
+        never included here (it isn't part of what changes the vectors).
+        """
+        section = self._data.get("embedding", {})
+        if self.embedding_backend == "fastembed":
+            model: str = section.get("model", DEFAULT_MODEL)
+            return model
+        spec = self.remote_embedding_spec
+        assert spec is not None  # embedding_backend == "openai" guarantees this
+        return identity_for(spec)
+
+    @property
+    def remote_embedding_spec(self) -> "RemoteSpec | None":
+        """Parsed ``[embedding]`` config for the openai backend, or None
+        when ``backend`` is "fastembed" (the default).
+
+        Raises ValueError for a missing/malformed base_url, a non-existent
+        api_key_env, or an out-of-type numeric field -- matching this
+        class's "malformed config = ValueError at property access" contract
+        (never silently fall back to a guessed default for something the
+        user explicitly configured wrong).
+        """
+        if self.embedding_backend != "openai":
+            return None
+        section = self._data.get("embedding", {})
+
+        base_url = section.get("base_url")
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ValueError(
+                "[embedding].base_url is required when "
+                "[embedding].backend = 'openai'"
+            )
+        parsed = urlsplit(base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                f"[embedding].base_url must be an http(s) URL, got {base_url!r}"
+            )
+
+        model = section.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError(
+                "[embedding].model is required when " "[embedding].backend = 'openai'"
+            )
+
+        api_key: "str | None" = None
+        api_key_env = section.get("api_key_env")
+        if api_key_env is not None:
+            if not isinstance(api_key_env, str) or not api_key_env.strip():
+                raise ValueError("[embedding].api_key_env must be a non-empty string")
+            api_key = os.environ.get(api_key_env)
+            if not api_key:
+                raise ValueError(
+                    f"[embedding].api_key_env names {api_key_env!r}, but that "
+                    "environment variable is unset or empty"
+                )
+
+        timeout = section.get("timeout", _DEFAULT_REMOTE_TIMEOUT)
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or timeout <= 0
+        ):
+            raise ValueError(
+                f"[embedding].timeout must be a positive number, got {timeout!r}"
+            )
+
+        batch_size = section.get("batch_size", _DEFAULT_REMOTE_BATCH_SIZE)
+        if (
+            not isinstance(batch_size, int)
+            or isinstance(batch_size, bool)
+            or batch_size < 1
+        ):
+            raise ValueError(
+                f"[embedding].batch_size must be a positive integer, got {batch_size!r}"
+            )
+
+        max_concurrency = section.get(
+            "max_concurrency", _DEFAULT_REMOTE_MAX_CONCURRENCY
+        )
+        if (
+            not isinstance(max_concurrency, int)
+            or isinstance(max_concurrency, bool)
+            or max_concurrency < 1
+        ):
+            raise ValueError(
+                "[embedding].max_concurrency must be a positive integer, got "
+                f"{max_concurrency!r}"
+            )
+
+        dimensions = section.get("dimensions")
+        if dimensions is not None and (
+            not isinstance(dimensions, int)
+            or isinstance(dimensions, bool)
+            or dimensions < 1
+        ):
+            raise ValueError(
+                f"[embedding].dimensions must be a positive integer, got {dimensions!r}"
+            )
+
+        document_prefix = section.get("document_prefix", "")
+        query_prefix = section.get("query_prefix", "")
+        if not isinstance(document_prefix, str):
+            raise ValueError("[embedding].document_prefix must be a string")
+        if not isinstance(query_prefix, str):
+            raise ValueError("[embedding].query_prefix must be a string")
+
+        return RemoteSpec(
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            timeout=float(timeout),
+            batch_size=batch_size,
+            max_concurrency=max_concurrency,
+            dimensions=dimensions,
+            document_prefix=document_prefix,
+            query_prefix=query_prefix,
+        )
 
     @property
     def config_path(self) -> Path:
