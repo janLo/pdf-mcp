@@ -509,3 +509,157 @@ def test_cpu_encode_empty_list():
 
     assert result.size == 0
     assert model.calls == []
+
+
+# --- Remote ("openai:") backend routing ---
+#
+# These tests never touch the network: remote_embedder.encode is itself
+# mocked (its own network behaviour is covered by tests/test_remote_embedder.py),
+# so this file only asserts that embedder.py picks the right path and applies
+# normalization/prefix consistently for both backends.
+
+
+REMOTE_IDENTITY = "openai:localhost:11434/nomic-embed-text"
+
+
+def _remote_spec(**overrides):
+    from pdf_mcp.remote_embedder import RemoteSpec
+
+    defaults = dict(base_url="http://localhost:11434/v1", model="nomic-embed-text")
+    defaults.update(overrides)
+    return RemoteSpec(**defaults)
+
+
+def test_is_remote_identity():
+    import pdf_mcp.embedder as emb
+
+    assert emb._is_remote_identity(REMOTE_IDENTITY)
+    assert not emb._is_remote_identity(DEFAULT)
+
+
+def test_check_available_remote_without_configure_remote_raises():
+    """A remote identity with no configure_remote() call is a config bug
+    (should never happen via PDFConfig.embedding_model) and must fail
+    loudly, not silently probe the network or fall through to fastembed."""
+    import pdf_mcp.embedder as emb
+
+    emb.configure_remote(None)
+    with pytest.raises(ValueError, match="no remote backend is configured"):
+        emb.check_available(REMOTE_IDENTITY)
+
+
+def test_check_available_remote_makes_no_network_call():
+    """Offline-only: see the module docstring for why (server.py's startup
+    capability probe swallows exceptions, so a network probe here could
+    silently demote the whole server to keyword-only on a down endpoint)."""
+    import pdf_mcp.embedder as emb
+
+    emb.configure_remote(_remote_spec())
+    try:
+        with patch("httpx.Client") as mock_client:
+            emb.check_available(REMOTE_IDENTITY)
+        mock_client.assert_not_called()
+    finally:
+        emb.configure_remote(None)
+
+
+def test_check_available_fastembed_identity_unaffected_by_remote_config():
+    """A configured remote spec must not change fastembed-identity behaviour."""
+    import pdf_mcp.embedder as emb
+
+    emb.configure_remote(_remote_spec())
+    try:
+        emb.check_available(DEFAULT)  # must not raise
+    finally:
+        emb.configure_remote(None)
+
+
+def test_encode_routes_to_remote_for_openai_identity():
+    import pdf_mcp.embedder as emb
+
+    emb.configure_remote(_remote_spec())
+    try:
+        with patch(
+            "pdf_mcp.remote_embedder.encode",
+            return_value=np.array([[3.0, 4.0]], dtype=np.float32),
+        ) as mock_encode:
+            result = emb.encode(["hello"], REMOTE_IDENTITY)
+    finally:
+        emb.configure_remote(None)
+
+    mock_encode.assert_called_once()
+    assert result.shape == (1, 2)
+    # L2-normalized here (remote_embedder never normalizes) -- [3,4] -> unit.
+    assert result[0] == pytest.approx([0.6, 0.8])
+
+
+def test_encode_document_side_uses_document_prefix():
+    import pdf_mcp.embedder as emb
+
+    emb.configure_remote(_remote_spec(document_prefix="doc: ", query_prefix="query: "))
+    try:
+        with patch(
+            "pdf_mcp.remote_embedder.encode",
+            return_value=np.array([[1.0]], dtype=np.float32),
+        ) as mock_encode:
+            emb.encode(["hello"], REMOTE_IDENTITY)
+    finally:
+        emb.configure_remote(None)
+
+    assert mock_encode.call_args.kwargs["prefix"] == "doc: "
+
+
+def test_encode_query_uses_query_prefix():
+    import pdf_mcp.embedder as emb
+
+    emb.configure_remote(_remote_spec(document_prefix="doc: ", query_prefix="query: "))
+    try:
+        with patch(
+            "pdf_mcp.remote_embedder.encode",
+            return_value=np.array([[1.0]], dtype=np.float32),
+        ) as mock_encode:
+            emb.encode_query("hello", REMOTE_IDENTITY)
+    finally:
+        emb.configure_remote(None)
+
+    assert mock_encode.call_args.kwargs["prefix"] == "query: "
+
+
+def test_encode_remote_empty_list_makes_no_network_call():
+    import pdf_mcp.embedder as emb
+
+    emb.configure_remote(_remote_spec())
+    try:
+        with patch("pdf_mcp.remote_embedder.encode") as mock_encode:
+            result = emb.encode([], REMOTE_IDENTITY)
+    finally:
+        emb.configure_remote(None)
+
+    mock_encode.assert_not_called()
+    assert result.size == 0
+
+
+def test_encode_query_returns_1d_vector_for_remote():
+    import pdf_mcp.embedder as emb
+
+    emb.configure_remote(_remote_spec())
+    try:
+        with patch(
+            "pdf_mcp.remote_embedder.encode",
+            return_value=np.array([[3.0, 4.0]], dtype=np.float32),
+        ):
+            result = emb.encode_query("hello", REMOTE_IDENTITY)
+    finally:
+        emb.configure_remote(None)
+
+    assert result.shape == (2,)
+    assert result == pytest.approx([0.6, 0.8])
+
+
+def test_configure_remote_none_clears_prior_spec():
+    import pdf_mcp.embedder as emb
+
+    emb.configure_remote(_remote_spec())
+    emb.configure_remote(None)
+    with pytest.raises(ValueError, match="no remote backend is configured"):
+        emb.check_available(REMOTE_IDENTITY)
