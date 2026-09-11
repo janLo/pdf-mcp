@@ -215,6 +215,17 @@ cache = PDFCache(
 pdf_config = PDFConfig()
 url_fetcher = URLFetcher(cache_dir=cache.cache_dir / "downloads", config=pdf_config)
 
+# Register the remote embedding spec (if [embedding].backend = "openai") once,
+# here, rather than at every encode()/encode_query() call site -- see
+# embedder.configure_remote's docstring. None (the fastembed backend, the
+# default) is a valid, cheap call. Import is local, matching every other
+# `embedder` use in this module, so fastembed's own import cost isn't paid
+# by processes that never touch semantic search.
+from . import embedder as _embedder_startup  # noqa: E402
+
+_embedder_startup.configure_remote(pdf_config.remote_embedding_spec)
+del _embedder_startup
+
 
 def _resolve_path(
     source: str,
@@ -429,11 +440,21 @@ def _detect_features() -> dict[str, Any]:
     try:
         embedder.check_available(model_name)
     except Exception:
-        # fastembed missing or model name unsupported: keyword-only.
+        # fastembed missing, model name unsupported, or a remote backend
+        # not registered: keyword-only.
         pass
     else:
         search["modes_available"] = ["keyword", "semantic", "auto"]
         search["embedding_model"] = model_name
+        search["embedding_backend"] = pdf_config.embedding_backend
+        remote_spec = pdf_config.remote_embedding_spec
+        if remote_spec is not None:
+            # Endpoint host only -- never the api_key (it isn't part of
+            # this dataclass's __repr__ safety story, but this call site
+            # picks the field explicitly rather than trust that).
+            from urllib.parse import urlsplit
+
+            search["embedding_endpoint"] = urlsplit(remote_spec.base_url).netloc
 
     return {
         "extraction": {

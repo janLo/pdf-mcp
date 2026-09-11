@@ -73,9 +73,7 @@ def _ttl_hours_from_env() -> int:
     try:
         value = int(raw)
     except ValueError as exc:
-        raise ValueError(
-            f"PDF_MCP_CACHE_TTL must be an integer (got {raw!r})"
-        ) from exc
+        raise ValueError(f"PDF_MCP_CACHE_TTL must be an integer (got {raw!r})") from exc
     if value < 0 or value > _MAX_CACHE_TTL_HOURS:
         raise ValueError(
             f"PDF_MCP_CACHE_TTL must be in [0, {_MAX_CACHE_TTL_HOURS}] hours "
@@ -197,11 +195,32 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    model_name = args.model or pdf_config.embedding_model
+    from . import embedder
+
+    # Resolved unconditionally -- passed to corpus.warm_docs()'s model_name=
+    # even when --no-embeddings, since warm_docs reports embeddings_cached
+    # against it regardless (corpus.py:854-858), so it must be the real
+    # identity, not a placeholder.
+    if pdf_config.embedding_backend == "openai":
+        remote_spec = pdf_config.remote_embedding_spec
+        assert remote_spec is not None  # backend == "openai" guarantees this
+        if args.model:
+            # Swap only the model component; keep the configured
+            # endpoint/auth/concurrency -- mirrors "--model" under the
+            # fastembed backend, which likewise leaves everything but the
+            # model name alone.
+            import dataclasses
+
+            remote_spec = dataclasses.replace(remote_spec, model=args.model)
+        embedder.configure_remote(remote_spec)
+        from . import remote_embedder
+
+        model_name = remote_embedder.identity_for(remote_spec)
+    else:
+        model_name = args.model or pdf_config.embedding_model
+
     embed_fn = None
     if args.embeddings:
-        from . import embedder
-
         try:
             embedder.check_available(model_name)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user, not raised

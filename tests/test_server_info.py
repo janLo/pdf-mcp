@@ -77,6 +77,40 @@ class TestServerInfo:
         search = feats["search"]
         assert "semantic" in search["modes_available"]
         assert "auto" in search["modes_available"]
+
+    def test_server_info_reports_fastembed_backend_by_default(self):
+        result = server_info()
+        search = result["features"]["search"]
+        if "embedding_model" in search:  # fastembed actually available here
+            assert search["embedding_backend"] == "fastembed"
+            assert "embedding_endpoint" not in search
+
+    def test_server_info_reports_remote_backend_and_endpoint_not_key(self, tmp_path):
+        """embedding_endpoint carries the host only; api_key never appears
+        anywhere in the response."""
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:11434/v1"\n'
+            'model = "nomic-embed-text"\n'
+            'api_key_env = "TEST_SERVER_INFO_KEY"\n',
+            encoding="utf-8",
+        )
+        import os
+
+        os.environ["TEST_SERVER_INFO_KEY"] = "sk-should-never-appear"
+        try:
+            remote_config = PDFConfig(config_path=cfg)
+            with patch.object(server, "pdf_config", remote_config):
+                with patch.object(embedder, "check_available", return_value=None):
+                    feats = _detect_features()
+        finally:
+            del os.environ["TEST_SERVER_INFO_KEY"]
+
+        search = feats["search"]
+        assert search["embedding_backend"] == "openai"
+        assert search["embedding_endpoint"] == "localhost:11434"
+        assert "sk-should-never-appear" not in json.dumps(feats)
         assert search["embedding_model"]
 
     def test_server_info_no_unexpected_absolute_paths(self):
