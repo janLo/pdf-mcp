@@ -671,3 +671,117 @@ class TestFtsLanguageConfig:
         cfg.write_text('[fts]\nlanguage = "fr"\n', encoding="utf-8")
         with pytest.raises(ValueError, match=r"\[fts\] language"):
             PDFConfig(config_path=cfg).fts_language
+
+
+class TestConfidenceThreshold:
+    def _write(self, tmp_path, body: str) -> PDFConfig:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(body, encoding="utf-8")
+        return PDFConfig(config_path=cfg)
+
+    def test_default_fastembed_model_gets_bge_small_default(self, tmp_path):
+        config = PDFConfig(config_path=tmp_path / "none.toml")
+        assert config.embedding_backend == "fastembed"
+        assert config.confidence_threshold == 0.5
+
+    def test_fastembed_non_bge_model_still_gets_bge_small_default(self, tmp_path):
+        """A local (fastembed) model choice is pre-existing, documented
+        behavior (docs/embedding-models.md) that predates this property --
+        only an unverifiable REMOTE model degrades to None (see case 2 vs.
+        3 in confidence_threshold's docstring). This must NOT regress an
+        existing arctic-embed-s (or similar) install's low_confidence."""
+        config = self._write(
+            tmp_path, '[embedding]\nmodel = "snowflake/snowflake-arctic-embed-s"\n'
+        )
+        assert config.embedding_backend == "fastembed"
+        assert config.confidence_threshold == 0.5
+
+    def test_openai_backend_bge_small_model_gets_default(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        assert config.confidence_threshold == 0.5
+
+    def test_openai_backend_bge_small_match_is_case_insensitive(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "BGE-SMALL-EN-V1.5-Q4"\n',
+        )
+        assert config.confidence_threshold == 0.5
+
+    def test_openai_backend_non_bge_model_is_unavailable_by_default(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n',
+        )
+        assert config.confidence_threshold is None
+
+    def test_explicit_threshold_overrides_non_bge_default(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n'
+            "confidence_threshold = 0.62\n",
+        )
+        assert config.confidence_threshold == 0.62
+
+    def test_explicit_threshold_overrides_bge_small_default_too(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n'
+            "confidence_threshold = 0.3\n",
+        )
+        assert config.confidence_threshold == 0.3
+
+    def test_explicit_threshold_accepts_boundary_values(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n'
+            "confidence_threshold = -1.0\n",
+        )
+        assert config.confidence_threshold == -1.0
+
+    def test_explicit_threshold_out_of_range_raises(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n'
+            "confidence_threshold = 1.5\n",
+        )
+        with pytest.raises(ValueError, match="confidence_threshold"):
+            config.confidence_threshold
+
+    def test_explicit_threshold_non_numeric_raises(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n'
+            'confidence_threshold = "high"\n',
+        )
+        with pytest.raises(ValueError, match="confidence_threshold"):
+            config.confidence_threshold
+
+    def test_explicit_threshold_bool_raises(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n'
+            "confidence_threshold = true\n",
+        )
+        with pytest.raises(ValueError, match="confidence_threshold"):
+            config.confidence_threshold

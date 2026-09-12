@@ -14,7 +14,7 @@ from typing import Any
 
 from urllib.parse import urlsplit
 
-from .embedder import DEFAULT_MODEL
+from .embedder import DEFAULT_MODEL, is_bge_small_compatible
 from .remote_embedder import RemoteSpec, _redact_base_url, identity_for
 from .url_fetcher import URLFetcher
 
@@ -35,6 +35,15 @@ _MIN_RESPONSE_BYTES = 4_096
 _DEFAULT_REMOTE_TIMEOUT = 60.0
 _DEFAULT_REMOTE_BATCH_SIZE = 32
 _DEFAULT_REMOTE_MAX_CONCURRENCY = 4
+
+# Cosine-similarity threshold below which pdf_search/pdf_corpus_search flag a
+# semantic match `low_confidence`. Historically a single module constant in
+# server.py (`_SEMANTIC_CONFIDENCE_THRESHOLD`); moved here so it can be
+# overridden per-config and so `confidence_threshold` below can decide,
+# per model, whether this default is even meaningful to apply. Tuned to
+# BAAI/bge-small-en-v1.5's own cosine-similarity distribution -- see
+# `confidence_threshold`'s docstring.
+_DEFAULT_BGE_SMALL_CONFIDENCE_THRESHOLD = 0.5
 
 
 class PDFConfig:
@@ -169,13 +178,15 @@ class PDFConfig:
         `document_prefix`/`query_prefix` below), unlike the narrower first
         version of this feature (issue #42) where it was cache-naming only.
         This reopens the concern that version was scoped specifically to
-        avoid: `_SEMANTIC_CONFIDENCE_THRESHOLD` and the hybrid RRF fusion
-        in server.py are tuned to bge-small-en-v1.5's own cosine-similarity
-        distribution, and nothing here validates that a configured model's
-        distribution is compatible with that tuning -- see the TODO on
-        `_SEMANTIC_CONFIDENCE_THRESHOLD` in server.py. That recalibration
-        problem is tracked in issue #46 and is NOT solved by this property;
-        it only makes the configuration surface for it available.
+        avoid: `_SEMANTIC_CONFIDENCE_THRESHOLD` in server.py is tuned to
+        bge-small-en-v1.5's own cosine-similarity distribution, and this
+        property does not itself validate that a configured model's
+        distribution is compatible with that tuning. `confidence_threshold`
+        below is the resolution issue #46 asked for: it degrades
+        `low_confidence` to null (with a startup warning) rather than
+        silently reusing bge-small's tuning for an incompatible model,
+        unless a real, calibrated value is set explicitly (see
+        `scripts/calibrate_confidence_threshold.py`).
 
         `document_prefix`/`query_prefix` default to "" (bge-small's own
         contract: no prefix), and `dimensions`, when set, is validated by
@@ -340,8 +351,11 @@ class PDFConfig:
         unwanted (e.g. a very slow cold start some servers have on the
         first request).
 
-        Only read when `[embedding].backend = "openai"`; meaningless (and
-        not read) for the default fastembed backend.
+        Meaningless, and not read, for the default fastembed backend, or
+        for an "openai" backend configured with a non-bge-small `model`
+        (there is nothing bge-small-shaped to compare a different model's
+        vectors against -- see `confidence_threshold` for that case
+        instead).
         """
         value = self._data.get("embedding", {}).get("verify_startup", True)
         if not isinstance(value, bool):
@@ -349,6 +363,91 @@ class PDFConfig:
                 f"[embedding].verify_startup must be true or false, got {value!r}"
             )
         return value
+
+    @property
+    def confidence_threshold(self) -> float | None:
+        """``[embedding].confidence_threshold``: the cosine-similarity cutoff
+        below which pdf_search/pdf_corpus_search flag a semantic (or hybrid)
+        match `low_confidence`.
+
+        This resolves what value server.py should actually use, given three
+        cases:
+
+        1. Explicitly set in config.toml -- used verbatim, for ANY backend
+           or model, after validating it is a number in [-1.0, 1.0] (the
+           valid range for cosine similarity on a normalized embedding).
+           This is the only way to get `low_confidence` for a non-bge-small
+           REMOTE model: run `scripts/calibrate_confidence_threshold.py`
+           against your endpoint and paste its suggested value here.
+
+        2. Not set, and the backend is "fastembed" (the default, local
+           path) -- always falls back to
+           `_DEFAULT_BGE_SMALL_CONFIDENCE_THRESHOLD` (0.5), REGARDLESS of
+           which local model is configured. This preserves this
+           codebase's pre-existing behavior for `docs/embedding-models.md`'s
+           documented local-model alternatives (e.g.
+           `snowflake/snowflake-arctic-embed-s`), which predate this
+           property and were never gated on bge-small compatibility --
+           issue #42/#46's concern is specifically an arbitrary *remote*
+           model silently reusing bge-small's tuning with no way to
+           verify it, not the already-supported local-model case. A local
+           non-bge-small model keeps whatever accuracy `low_confidence`
+           already had for it before this change; that is a pre-existing,
+           separately-tracked concern, not a regression introduced here.
+
+        3. Not set, and the backend is "openai" with a `model` that is NOT
+           bge-small-compatible (`embedder.is_bge_small_compatible`) --
+           returns None. server.py reads None as "we do not know what a
+           meaningful cutoff is for this model's cosine distribution" and
+           reports `low_confidence`/`all_results_low_confidence` as null
+           plus `confidence_unavailable=True`, rather than silently
+           reusing a threshold tuned for a different model's score
+           distribution. This is the failure mode
+           https://github.com/jztan/pdf-mcp/issues/42 flagged and
+           https://github.com/jztan/pdf-mcp/issues/46 tracks fixing. (An
+           "openai" backend with a bge-small-compatible `model` also
+           returns 0.5 here, same as case 2 -- same vector space, same
+           tuning, verified at startup by the safety check above.)
+
+        Why case 3 degrades instead of raising ValueError at config-load
+        time (unlike `base_url`/`model` above, which DO raise when
+        missing): an unset threshold does not make the "openai" backend
+        inoperable -- encoding, keyword search, and hybrid RRF ranking
+        (see `_rrf_fuse` in server.py -- rank-based, not score-magnitude-
+        based, so it is unaffected by this) all still work correctly.
+        Only the derived `low_confidence` signal is compromised, which is
+        exactly the situation `semantic_unavailable` and `text_coverage`
+        already handle elsewhere in server.py: report the gap loudly on
+        every affected response and in a one-time startup warning
+        (server.py, right after `configure_remote`), rather than block a
+        server whose search and extraction tools work fine otherwise.
+        """
+        section = self._data.get("embedding", {})
+        raw = section.get("confidence_threshold")
+        if raw is not None:
+            if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+                raise ValueError(
+                    "[embedding].confidence_threshold must be a number "
+                    f"between -1.0 and 1.0, got {raw!r}"
+                )
+            if not (-1.0 <= raw <= 1.0):
+                raise ValueError(
+                    "[embedding].confidence_threshold must be a number "
+                    f"between -1.0 and 1.0, got {raw!r}"
+                )
+            return float(raw)
+
+        if self.embedding_backend == "fastembed":
+            # Any local model keeps the pre-existing 0.5 default -- see
+            # case 2 in the docstring above. Only a remote, non-bge-small
+            # model is genuinely unknown territory.
+            return _DEFAULT_BGE_SMALL_CONFIDENCE_THRESHOLD
+
+        spec = self.remote_embedding_spec
+        assert spec is not None  # embedding_backend == "openai" guarantees this
+        if is_bge_small_compatible(spec.model):
+            return _DEFAULT_BGE_SMALL_CONFIDENCE_THRESHOLD
+        return None
 
     @property
     def fts_language(self) -> str | None:
