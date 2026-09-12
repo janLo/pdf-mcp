@@ -594,3 +594,54 @@ def test_bundle_built_after_lock_regeneration(monkeypatch, tmp_path):
     )
     release.commit_version_bump(config, "3.2.0")
     assert order == ["lock", "mcpb"]
+
+
+# -- until-release notices ---------------------------------------------------
+
+UNTIL = (
+    "# Title\n\n### Claude Desktop\n\n"
+    "<!-- until-release -->\n> Coming in the next release.\n<!-- /until-release -->\n\n"
+    "1. Download it.\n"
+)
+
+
+def test_strip_removes_only_the_notice():
+    assert release.strip_until_release_blocks(UNTIL) == (
+        "# Title\n\n### Claude Desktop\n\n1. Download it.\n"
+    )
+
+
+def test_strip_refuses_unbalanced_markers():
+    with pytest.raises(RuntimeError, match="until-release"):
+        release.strip_until_release_blocks("<!-- until-release -->\nx\n")
+
+
+def test_release_removes_notices_from_readme_and_clients(tmp_path):
+    (tmp_path / "docs").mkdir()
+    for name in release.UNTIL_RELEASE_FILES:
+        (tmp_path / name).write_text(UNTIL, encoding="utf-8")
+    release.remove_until_release_notices(tmp_path, dry_run=True)
+    assert (tmp_path / "README.md").read_text() == UNTIL  # dry run: untouched
+    release.remove_until_release_notices(tmp_path, dry_run=False)
+    for name in release.UNTIL_RELEASE_FILES:
+        text = (tmp_path / name).read_text()
+        assert "until-release" not in text and "Download it." in text
+
+
+def test_committed_notices_strip_cleanly():
+    """Whatever until-release blocks the docs hold, the release can remove
+    them and leaves the download steps in place."""
+    root = Path(__file__).resolve().parent.parent
+    for name in release.UNTIL_RELEASE_FILES:
+        text = (root / name).read_text(encoding="utf-8")
+        stripped = release.strip_until_release_blocks(text)
+        assert "until-release" not in stripped
+        if "until-release" in text:
+            assert "releases/latest/download/pdf-mcp.mcpb" in stripped
+
+
+def test_notice_removal_is_staged():
+    import inspect
+
+    src = inspect.getsource(release.commit_version_bump)
+    assert '"docs/clients.md"' in src and '"README.md"' in src
