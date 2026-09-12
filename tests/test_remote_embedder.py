@@ -6,10 +6,8 @@ here mirrors that file: patch("httpx.Client") and build a MagicMock
 response with the attributes _post_with_retry actually reads
 (status_code, json(), text, headers).
 
-Scope note: this module only ever serves bge-small-en-v1.5 remotely (see
-the module docstring in remote_embedder.py and issue #46), so there is no
-document_prefix/query_prefix or dimensions surface to test here -- that
-plumbing lives on the model-choice follow-up branch.
+This is the model-choice branch (issue #46): document_prefix/query_prefix
+and dimensions are real, tested surface here, unlike on the narrow branch.
 """
 
 from __future__ import annotations
@@ -27,6 +25,7 @@ from pdf_mcp.remote_embedder import (
     RemoteSpec,
     _redact_base_url,
     encode,
+    identity_for,
 )
 
 
@@ -55,6 +54,41 @@ def _fake_vec(text: str, dim: int = 3) -> list[float]:
     """A deterministic, distinguishable vector for a given input text."""
     h = sum(text.encode("utf-8"))
     return [float((h + i) % 97) for i in range(dim)]
+
+
+class TestIdentityFor:
+    def test_bare_host_no_prefixes(self):
+        spec = _spec(base_url="http://localhost:11434/v1")
+        assert identity_for(spec) == "openai:localhost:11434/bge-small-en-v1.5"
+
+    def test_different_host_differs(self):
+        a = identity_for(_spec(base_url="http://host-a:11434/v1"))
+        b = identity_for(_spec(base_url="http://host-b:11434/v1"))
+        assert a != b
+
+    def test_different_model_differs(self):
+        a = identity_for(_spec(model="bge-small-en-v1.5"))
+        b = identity_for(_spec(model="bge-small-en-v1.5-q8"))
+        assert a != b
+
+    def test_stable_for_same_spec(self):
+        assert identity_for(_spec()) == identity_for(_spec())
+
+    def test_prefixes_change_the_identity(self):
+        plain = identity_for(_spec())
+        prefixed = identity_for(_spec(document_prefix="search_document: "))
+        assert plain != prefixed
+        assert prefixed.startswith(plain + "@")
+
+    def test_prefix_hash_is_stable(self):
+        a = identity_for(_spec(document_prefix="x", query_prefix="y"))
+        b = identity_for(_spec(document_prefix="x", query_prefix="y"))
+        assert a == b
+
+    def test_different_prefix_pair_differs(self):
+        a = identity_for(_spec(document_prefix="x"))
+        b = identity_for(_spec(document_prefix="z"))
+        assert a != b
 
 
 class TestRedactBaseUrl:
@@ -97,8 +131,18 @@ class TestEncodeBasics:
             arr = encode(texts, _spec())
         assert arr[0] == pytest.approx([3.0, 4.0, 0.0])
 
-    def test_text_sent_unmodified(self):
-        """No prefix surface in this narrow client -- input passes through."""
+    def test_document_prefix_is_prepended(self):
+        texts = ["alpha"]
+        with patch("httpx.Client") as mock_client:
+            client = mock_client.return_value.__enter__.return_value
+            client.post.return_value = _mock_response(
+                data=_embeddings_body([[1.0, 2.0]])
+            )
+            encode(texts, _spec(), prefix="search_document: ")
+        sent = client.post.call_args.kwargs["json"]
+        assert sent["input"] == ["search_document: alpha"]
+
+    def test_no_prefix_leaves_text_unmodified(self):
         with patch("httpx.Client") as mock_client:
             client = mock_client.return_value.__enter__.return_value
             client.post.return_value = _mock_response(
@@ -322,3 +366,23 @@ class TestAuthAndSecrecy:
                     _spec(base_url="http://user:hunter2@localhost:9/v1"),
                 )
         assert "hunter2" not in str(exc_info.value)
+
+
+class TestDimensionValidation:
+    def test_mismatched_dimensions_raises(self):
+        with patch("httpx.Client") as mock_client:
+            client = mock_client.return_value.__enter__.return_value
+            client.post.return_value = _mock_response(
+                data=_embeddings_body([[1.0, 2.0, 3.0]])
+            )
+            with pytest.raises(RemoteEmbeddingError, match="does not match configured"):
+                encode(["a"], _spec(dimensions=768, batch_size=32, max_concurrency=1))
+
+    def test_matching_dimensions_pass(self):
+        with patch("httpx.Client") as mock_client:
+            client = mock_client.return_value.__enter__.return_value
+            client.post.return_value = _mock_response(
+                data=_embeddings_body([[1.0, 2.0, 3.0]])
+            )
+            arr = encode(["a"], _spec(dimensions=3, batch_size=32, max_concurrency=1))
+        assert arr.shape == (1, 3)

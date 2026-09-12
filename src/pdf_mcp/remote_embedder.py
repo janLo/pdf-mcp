@@ -1,24 +1,26 @@
 """
-HTTP client for a self-hosted, OpenAI-compatible ``POST /v1/embeddings``
-endpoint.
+HTTP client for an OpenAI-compatible ``POST /v1/embeddings`` endpoint.
 
-Covers ollama, lemonade, bare ``llama-server``, and vLLM with one
-implementation, since they all speak the same request/response schema. This
-module is intentionally the only place that touches the network for
-embeddings; ``embedder.py`` owns dispatch and normalization, ``config.py``
-owns parsing ``[embedding]`` into a `RemoteSpec`.
+Covers ollama, lemonade, bare ``llama-server``, vLLM, and hosted providers
+(OpenRouter, OpenAI) with one implementation, since they all speak the same
+request/response schema. This module is intentionally the only place that
+touches the network for embeddings; ``embedder.py`` owns dispatch and
+normalization, ``config.py`` owns parsing ``[embedding]`` into a `RemoteSpec`.
 
-Scope (see issue #42 and issue #46): this client only ever serves
-BAAI/bge-small-en-v1.5 remotely -- the point is a Vulkan/iGPU speed win on
-hardware fastembed's onnxruntime backends can't reach, NOT arbitrary model
-choice. `RemoteSpec.model` exists solely for cache-identity naming (so a
-config change that points at a different remote model still gets its own
-cache rows); it is not a signal that changes how text is encoded. Nothing
-here applies a document/query prefix or validates a `dimensions` value --
-bge-small needs neither. General model support (arbitrary prefixes,
-dimension validation, and the low_confidence/RRF threshold recalibration
-that a different model's cosine distribution would require) is tracked
-separately in issue #46 and lives on top of this in a follow-up branch.
+This branch (see issue #46) extends the narrower first version (issue #42,
+`feature/embed-remote-narrow`) with support for an arbitrary remote model:
+`RemoteSpec.document_prefix`/`query_prefix` (asymmetric prefix protocols
+like nomic's "search_document:"/"search_query:") and `dimensions` (output
+width validation). `model` is no longer purely a cache-naming label --
+it now genuinely selects what gets encoded and how, which is exactly the
+surface the upstream maintainer originally asked to keep out of the first
+version: `_SEMANTIC_CONFIDENCE_THRESHOLD` and the hybrid RRF fusion in
+server.py are tuned to bge-small-en-v1.5's own cosine-similarity
+distribution, and nothing in this module (or anywhere else in this
+codebase) validates that a configured model's distribution is compatible
+with that tuning. See the TODO on `_SEMANTIC_CONFIDENCE_THRESHOLD` in
+server.py -- recalibrating (or per-model-profiling) that threshold is
+unresolved, tracked work, not something this branch attempts to fix.
 
 Unlike the local fastembed path (one process, one encode call), a remote
 endpoint is I/O-bound: batches are issued concurrently from a bounded thread
@@ -65,14 +67,21 @@ class RemoteSpec:
     included in an exception message in full -- see `_redact_base_url` and
     the header-only use in `_headers`.
 
-    ``model`` is informational only -- it names which model the remote
-    server should load, but nothing in this module or in embedder.py
-    branches on its value, and it is NOT folded into the vector-cache
-    identity (see PDFConfig.embedding_model's docstring: a verified remote
-    endpoint deliberately shares cache rows with local fastembed). There is
-    deliberately no `dimensions`, `document_prefix`, or `query_prefix`
-    field: this version only ever talks to bge-small-en-v1.5, which needs
-    none of them. See the module docstring and issue #46.
+    ``model`` names which model the remote server should load and is
+    folded into the cache identity (see `identity_for`); embedder.py does
+    not itself branch on its value, but `document_prefix`/`query_prefix`/
+    `dimensions` below make the choice of model behaviorally significant
+    -- see the module docstring for why that reopens issue #42's concern
+    and the TODO on `_SEMANTIC_CONFIDENCE_THRESHOLD` in server.py.
+
+    ``document_prefix``/``query_prefix`` are prepended to document and
+    query text respectively before encoding (see `encode`'s `prefix`
+    argument) -- required by some models' training protocol (nomic,
+    Qwen3-Embedding), a no-op ("") for models like bge-small that use none.
+
+    ``dimensions`` is optional; when set, `encode` validates the response
+    width against it rather than silently accepting whatever width the
+    server returns.
 
     ``max_attempts`` overrides `MAX_ATTEMPTS` for this spec -- used by
     remote_embedding_check.py to make exactly one attempt at startup rather
@@ -86,6 +95,40 @@ class RemoteSpec:
     batch_size: int = 32
     max_concurrency: int = 4
     max_attempts: int = MAX_ATTEMPTS
+    dimensions: "int | None" = None
+    document_prefix: str = ""
+    query_prefix: str = ""
+
+
+def identity_for(spec: RemoteSpec) -> str:
+    """The cache-identity string for `spec`: 'openai:<host>[:<port>]/<model>
+    [@<prefix-hash>]'.
+
+    Pure function of `spec` (no I/O), so both PDFConfig.embedding_model and
+    any future `--model` override can share it rather than reimplementing
+    the same string.
+
+    Host/port and the prefix hash are part of the identity deliberately --
+    see PDFConfig.embedding_model's docstring for the full rationale
+    (different endpoint or different prefixes = a different vector space,
+    must not share a cache row). The API key is intentionally excluded,
+    and so is any userinfo (user:pass@) a base_url might embed -- this
+    identity string is stored in the cache DB, so it must be as
+    credential-free as an error message (see `_redact_base_url`).
+    """
+    import hashlib
+
+    parts = urlsplit(spec.base_url)
+    host = parts.hostname or spec.base_url
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    identity = f"openai:{host}/{spec.model}"
+    if spec.document_prefix or spec.query_prefix:
+        digest = hashlib.sha256(
+            f"{spec.document_prefix}\x00{spec.query_prefix}".encode("utf-8")
+        ).hexdigest()[:8]
+        identity += f"@{digest}"
+    return identity
 
 
 def _redact_base_url(base_url: str) -> str:
@@ -162,7 +205,7 @@ def _post_with_retry(
 
 
 def _embed_batch(
-    client: httpx.Client, spec: RemoteSpec, texts: list[str]
+    client: httpx.Client, spec: RemoteSpec, texts: list[str], prefix: str
 ) -> list[list[float]]:
     """One request for one batch. Returns rows in the CALLER's order.
 
@@ -173,9 +216,10 @@ def _embed_batch(
     desync corpus.py's per-page unit slicing, which relies on positional
     alignment).
     """
+    prefixed = [prefix + t for t in texts] if prefix else texts
     payload: dict[str, Any] = {
         "model": spec.model,
-        "input": texts,
+        "input": prefixed,
         # Several servers (notably some OpenAI-compatible proxies) default
         # to base64; this codebase's whole read path is
         # np.frombuffer(blob, dtype=np.float32) with no header, so a
@@ -183,6 +227,8 @@ def _embed_batch(
         # rather than fail loudly. Ask for floats explicitly.
         "encoding_format": "float",
     }
+    if spec.dimensions is not None:
+        payload["dimensions"] = spec.dimensions
     body = _post_with_retry(
         client,
         _endpoint_url(spec.base_url),
@@ -216,7 +262,7 @@ def _chunks(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def encode(texts: list[str], spec: RemoteSpec) -> Any:
+def encode(texts: list[str], spec: RemoteSpec, *, prefix: str = "") -> Any:
     """
     Encode `texts` via the OpenAI-compatible endpoint in `spec`.
 
@@ -225,14 +271,15 @@ def encode(texts: list[str], spec: RemoteSpec) -> Any:
     (servers differ in whether they return unit vectors, same reasoning as
     the fastembed path).
 
-    # TODO(model-choice, see issue #46): this is the natural extension
-    # point for an asymmetric document/query prefix contract (nomic,
-    # Qwen3-Embedding, etc. all need one) and for validating a configured
-    # `dimensions` against the response. Both are deliberately absent here:
-    # this client only ever serves bge-small-en-v1.5, which needs neither,
-    # and adding either back also means recalibrating the low_confidence /
-    # hybrid RRF fusion thresholds tuned to bge-small's cosine distribution
-    # -- see the model-choice branch for that follow-up work.
+    `prefix` is the caller's document_prefix or query_prefix (embedder.py
+    picks which); prepended to every text before the request, never sent
+    empty-string-only (`prefixed = texts` unchanged when prefix == "").
+
+    Model choice here is real (see the module docstring): the caller is
+    responsible for having accounted for whatever cosine distribution the
+    configured model produces before trusting `low_confidence`/RRF scores
+    computed from these vectors -- this function does not and cannot check
+    that itself.
     """
     if not texts:
         return np.empty((0,), dtype=np.float32)
@@ -243,7 +290,7 @@ def encode(texts: list[str], spec: RemoteSpec) -> Any:
     if len(batches) == 1 or spec.max_concurrency <= 1:
         with httpx.Client(timeout=spec.timeout) as client:
             for i, batch in enumerate(batches):
-                results[i] = _embed_batch(client, spec, batch)
+                results[i] = _embed_batch(client, spec, batch, prefix)
     else:
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -252,7 +299,7 @@ def encode(texts: list[str], spec: RemoteSpec) -> Any:
                 max_workers=min(spec.max_concurrency, len(batches))
             ) as pool:
                 futures = {
-                    pool.submit(_embed_batch, client, spec, batch): i
+                    pool.submit(_embed_batch, client, spec, batch, prefix): i
                     for i, batch in enumerate(batches)
                 }
                 for fut in as_completed(futures):
@@ -282,5 +329,11 @@ def encode(texts: list[str], spec: RemoteSpec) -> Any:
         raise RemoteEmbeddingError(
             f"embedding response from {_redact_base_url(spec.base_url)} "
             f"produced ragged/empty vectors (shape={arr.shape})"
+        )
+    if spec.dimensions is not None and arr.shape[1] != spec.dimensions:
+        raise RemoteEmbeddingError(
+            f"embedding response dimension {arr.shape[1]} does not match "
+            f"configured dimensions={spec.dimensions} for model "
+            f"{spec.model!r} at {_redact_base_url(spec.base_url)}"
         )
     return arr
