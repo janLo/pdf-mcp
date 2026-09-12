@@ -41,7 +41,7 @@ section-granularity `pdf_search`; see [docs/response-limits.md](response-limits.
 
 **`[embedding]`** — the semantic-search model; the default shown above is
 `BAAI/bge-small-en-v1.5`. See [docs/embedding-models.md](embedding-models.md)
-and "Remote-served bge-small (`[embedding].backend = "openai"`)" below.
+and "Remote embedding backend (`[embedding].backend = "openai"`)" below.
 
 **`[fts]`** — `language = "de"` turns on a German-stemmed keyword-search
 mirror index (Snowball stemming, via the pure-Python `snowballstemmer`
@@ -189,25 +189,15 @@ encode memory instead of 2.8 GB, with identical vectors. Thread pinning
 was measured on the same machine and does not help: one intra-op thread
 ran as fast as fourteen, so the encode is memory-bound, not compute-bound.
 
-### Remote-served bge-small (`[embedding].backend = "openai"`)
+### Remote embedding backend (`[embedding].backend = "openai"`)
 
 Optional and off by default (`fastembed`, the bundled local path). Points
-semantic search at a self-hosted, OpenAI-compatible `POST /v1/embeddings`
-HTTP endpoint instead of onnxruntime — useful when a server on your network
-(ollama, lemonade, llama-server, vLLM) can reach a faster compute backend
-than the ones fastembed's onnxruntime wheels support on your machine (for
-example a Vulkan iGPU path on some AMD hardware).
-
-**This is deliberately narrow: the remote endpoint must serve
-`BAAI/bge-small-en-v1.5`** — the same model fastembed uses by default —
-not an arbitrary model. `low_confidence` and the hybrid RRF fusion score
-used elsewhere in this server are tuned to bge-small's cosine-similarity
-distribution; a different model's distribution would silently throw those
-off with no error, which is exactly the failure mode this version avoids
-by not supporting one. General model choice, with the validation and
-threshold recalibration a different model would need, is tracked
-separately (see
-[jztan/pdf-mcp#46](https://github.com/jztan/pdf-mcp/issues/46)).
+semantic search at an OpenAI-compatible `POST /v1/embeddings` HTTP endpoint
+instead of onnxruntime — useful when a server on your network (ollama,
+lemonade, llama-server, vLLM, a hosted provider) can reach a faster compute
+backend than the ones fastembed's onnxruntime wheels support on your
+machine (for example a Vulkan iGPU path on some AMD hardware), or when you
+want to run a model fastembed doesn't ship at all.
 
 Measured against a real quantized deployment (Q8_0 GGUF over `llama-server`
 on Vulkan): cosine parity against local fastembed is 0.99989 minimum /
@@ -222,37 +212,71 @@ depending on concurrency
 backend = "openai"
 base_url = "http://localhost:8000/v1"
 model = "bge-small-en-v1.5"       # informational: names the model your
-                                  # server should load; does not change how
-                                  # text is encoded (see below) and is not
-                                  # part of the vector-cache identity
+                                  # server should load, and namespaces the
+                                  # vector cache; does not change how text
+                                  # is encoded for bge-small (see below for
+                                  # a different model)
 api_key_env = "MY_EMBED_API_KEY"  # optional; names an env var, never a
                                   # literal key in config.toml
 timeout = 60                      # seconds, per request (default 60)
 batch_size = 32                   # texts per request (default 32)
 max_concurrency = 4               # concurrent in-flight requests (default 4)
+verify_startup = true             # cosine-parity safety check (default true,
+                                   # bge-small-compatible model names only)
 ```
 
 `base_url` and `model` are required whenever `backend = "openai"`. Every
 other key has the default shown above and may be omitted.
 
-Why `model` doesn't select behavior here: this client applies no
-document/query prefix and validates no output dimension — bge-small needs
-neither. Setting `document_prefix`, `query_prefix`, or `dimensions` under
-`[embedding]` is rejected with a startup `ValueError` rather than silently
-ignored, since a config that needs one of them wants the general-model-
-choice feature this version does not provide.
+**Pointing `model` at something other than a bge-small build** (e.g.
+`bge-m3`, `Qwen3-Embedding-0.6B`) needs three more keys, which default to
+"none of this applies" and only make sense together for a genuinely
+different model — do not add these alongside a bge-small `model` value,
+they contradict it:
 
-**The vector cache is shared with local fastembed, not namespaced per
-endpoint.** `embedding_model` (the identity that keys `page_embeddings`/
-`doc_profiles` rows) is always the bare `BAAI/bge-small-en-v1.5` name,
-regardless of backend — a verified remote endpoint proves it returns the
-same vectors (see the mandatory startup check below), so a CPU fallback, a
-different `base_url`, or `127.0.0.1` vs `localhost` all read the same
-cached rows instead of re-embedding everything. This is exactly why the
-startup check below is mandatory rather than optional: an unverified
-endpoint would silently write mismatched vectors into rows local fastembed
-also reads. The `api_key`, if any, and any credentials embedded in
-`base_url`, are never written into a log line or an exception message.
+```toml
+[embedding]
+backend = "openai"
+base_url = "http://localhost:8000/v1"
+model = "Qwen3-Embedding-0.6B"          # a non-bge-small model
+document_prefix = "search_document: "  # optional; prepended to document text
+query_prefix = "search_query: "        # optional; prepended to query text
+dimensions = 1024                      # optional; validated against the
+                                        # endpoint's actual response width
+confidence_threshold = 0.42            # see the calibration section below --
+                                        # required in practice for a non-
+                                        # bge-small model, see the caveat below
+```
+
+`document_prefix`/`query_prefix` default to `""` (no prefix — the right
+setting for `BAAI/bge-small-en-v1.5`, fastembed's own default model);
+some models (nomic-embed-text, the Qwen3-Embedding family) are trained
+with an asymmetric document/query prefix contract and need these set to
+retrieve correctly.
+
+**Read this before pointing `model` at anything other than
+`bge-small-en-v1.5`.** `low_confidence` and the hybrid RRF fusion score
+used elsewhere in this server are tuned to bge-small's own
+cosine-similarity distribution. Nothing in this codebase validates that a
+different model's distribution is compatible with that tuning — a poor
+fit silently degrades `low_confidence` accuracy and hybrid-mode ranking,
+with **no error raised anywhere**. This is a known, currently open gap
+(see the `TODO(issue #46, model-choice)` comment on
+`_SEMANTIC_CONFIDENCE_THRESHOLD` in `src/pdf_mcp/server.py` and
+[jztan/pdf-mcp#46](https://github.com/jztan/pdf-mcp/issues/46)); there is
+no startup safety check yet that would catch this automatically. Treat
+non-bge-small models on this backend as experimental until that
+recalibration work lands.
+
+The vector cache is namespaced by endpoint, model, and prefix pair
+(`openai:<host>[:<port>]/<model>[@<prefix-hash>]`), so pointing at a
+different server, port, model string, or prefix pair re-embeds rather
+than silently reusing another configuration's vectors — a different
+endpoint can be a different vector space even under the "same" model name
+(a different quantization, for instance), and a different prefix pair
+changes what text is actually encoded. The `api_key`, if any, and any
+credentials embedded in `base_url`, are never written into this identity
+string, a log line, or an exception message.
 
 **`base_url` must resolve to a private/loopback address.** pdf-mcp resolves
 `base_url`'s hostname (via the same DNS lookup and private/loopback ranges
@@ -275,24 +299,28 @@ any outbound request this server makes.
 only) once the endpoint is configured and `embedding_model` resolves
 successfully.
 
-**Startup safety check (mandatory).** pdf-mcp cannot see which model
+**Startup safety check, bge-small only.** pdf-mcp cannot see which model
 actually sits behind `base_url` — a misconfigured endpoint could silently
 serve a different model, quantization, or pooling strategy, each of which
 shifts the cosine-similarity distribution `low_confidence`/RRF fusion are
-tuned against, and which the shared cache above would otherwise let leak
-straight into local fastembed's own rows. So, once at startup (before the
-first real request, and before `embedder.configure_remote` is called),
-pdf-mcp embeds a handful of fixed reference sentences through the
-configured endpoint (a single request, one attempt — it fails fast on an
-unreachable endpoint rather than blocking startup) and compares each
-vector to a stored local-fastembed `bge-small-en-v1.5` reference by cosine
-similarity (`src/pdf_mcp/remote_embedding_check.py`). If the *minimum*
-per-sentence cosine drops below `0.999`, the server logs a warning and
-falls back to the local fastembed backend for the rest of the process — it
-never crashes and never silently serves vectors from the wrong space. This
-check cannot be turned off: since a verified endpoint's vectors and local
-fastembed's share the same cache rows, an unverified endpoint would corrupt
-that shared cache rather than just its own.
+tuned against. So, once at startup (before the first real request, and
+before `embedder.configure_remote` is called), and only when `model` looks
+bge-small-compatible (see `embedder.is_bge_small_compatible`), pdf-mcp
+embeds a handful of fixed reference sentences through the configured
+endpoint (a single request, one attempt — it fails fast on an unreachable
+endpoint rather than blocking startup) and compares each vector to a
+stored local-fastembed `bge-small-en-v1.5` reference by cosine similarity
+(`src/pdf_mcp/remote_embedding_check.py`). If the *minimum* per-sentence
+cosine drops below `0.999`, the server logs a warning and falls back to
+the local fastembed backend for the rest of the process — it never
+crashes and never silently serves vectors from the wrong space. Set
+`verify_startup = false` to skip this one-time round-trip for an endpoint
+you have already verified out-of-band.
+
+**This check does not run, and cannot help, for a genuinely different
+model** (there is no bge-small-shaped reference to compare a `bge-m3` or
+`Qwen3-Embedding` response against) — see `confidence_threshold` below for
+that case instead.
 
 ### Docker deployment notes
 

@@ -9,19 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Remote GPU embedding for bge-small (opt-in).** `[embedding].backend =
-  "openai"` sends semantic-search embedding to a self-hosted,
-  OpenAI-compatible `/v1/embeddings` server (ollama, llama-server, vLLM,
-  lemonade), so a GPU that onnxruntime can't use, such as an AMD iGPU over
-  Vulkan, does the work: 4.2 to 4.8x faster than the CPU path on one.
-  It serves the same bge-small model and shares the local vector cache. At
-  startup the server checks the endpoint's vectors against local bge-small
-  and falls back to CPU with a warning if they don't match. If the endpoint
-  goes down mid-session, `mode="semantic"` returns an error and
-  `mode="auto"` falls back to keyword search. `base_url` must resolve to a
-  loopback or private address (LAN, Docker, Tailscale). See
-  [docs/configuration.md](docs/configuration.md).
-  ([#42](https://github.com/jztan/pdf-mcp/issues/42))
+- **Remote embedding backend, with experimental arbitrary-model support
+  (issue #46).** `[embedding].backend = "openai"` points semantic search
+  at any OpenAI-compatible `/v1/embeddings` HTTP endpoint (ollama,
+  lemonade, llama-server, vLLM, OpenAI, ...) instead of the bundled
+  fastembed/onnxruntime path -- e.g. an AMD iGPU over Vulkan that
+  onnxruntime can't reach, measured at 4.2-4.8x faster than the CPU path
+  for bge-small (cosine parity 0.99989 minimum against local fastembed).
+  Configure with `base_url` and `model` (required), `api_key_env`,
+  `timeout`, `batch_size`, `max_concurrency`, and -- for models that need
+  them -- `document_prefix`/`query_prefix` (asymmetric prefix protocols,
+  e.g. nomic's `"search_document:"` / `"search_query:"`) and `dimensions`
+  (output-width validation). `server_info` reports `embedding_backend` and
+  `embedding_endpoint` (host:port only, never a credential) once the
+  backend loads successfully. `base_url` must resolve to a loopback or
+  private address (LAN, Docker, Tailscale). If the endpoint goes down
+  mid-session, `mode="semantic"` returns an error and `mode="auto"` falls
+  back to keyword search. See `docs/configuration.md` for the full key
+  reference. ([#42](https://github.com/jztan/pdf-mcp/issues/42))
+
+  A startup safety check (`src/pdf_mcp/remote_embedding_check.py`) guards
+  the bge-small case: pdf-mcp cannot see which model actually sits behind
+  `base_url`, so once at startup it embeds a handful of fixed reference
+  sentences through the configured endpoint and compares them by cosine
+  similarity to stored local-fastembed bge-small reference vectors
+  (`src/pdf_mcp/bge_small_reference.json`). If the minimum per-sentence
+  cosine drops below 0.999, the server logs a warning and falls back to
+  local fastembed for the rest of the process instead of silently serving
+  vectors from the wrong space. Opt out with `[embedding].verify_startup =
+  false`. This check is scoped to bge-small-compatible model names (see
+  `embedder.is_bge_small_compatible`) -- it cannot validate an
+  intentionally *different* model, since it has nothing bge-small-shaped
+  to compare against; see the arbitrary-model caveat below for that case.
 
 - **`pdf-mcp-warm`: an offline entry point that warms a whole corpus to
   completion, outside any MCP client.** `pdf_corpus_warm` (the tool) caps
@@ -67,6 +86,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   oversubscription under `docker run --cpus=N`; set
   `PDF_MCP_MAX_WORKERS` explicitly there. See
   [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md) ([#41](https://github.com/jztan/pdf-mcp/pull/41)).
+
+  **The arbitrary-model surface (a `model` other than bge-small, plus
+  `document_prefix`/`query_prefix`/`dimensions`) is experimental and its
+  main caveat is still being worked through.** `low_confidence` elsewhere
+  in this server is tuned to `BAAI/bge-small-en-v1.5`'s own
+  cosine-similarity distribution. Pointing this backend at a different
+  model does not, on its own, validate whether that model's cosine
+  distribution is compatible with that tuning -- a poor fit degrades
+  `low_confidence` accuracy silently, with no error raised. See the
+  `TODO(issue #46, model-choice)` comment on `_SEMANTIC_CONFIDENCE_THRESHOLD`
+  in `src/pdf_mcp/server.py`. (`_RRF_K`'s hybrid rank-fusion, by contrast,
+  fuses purely by rank, never by score magnitude, so it is not affected by
+  model choice -- confirmed by reading `_rrf_fuse` directly.)
 
 - **One-click install for Claude Desktop.** Every release now ships a
   `pdf-mcp-<version>.mcpb` bundle. Download it and drag it onto Claude
