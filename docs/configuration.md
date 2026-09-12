@@ -254,19 +254,75 @@ some models (nomic-embed-text, the Qwen3-Embedding family) are trained
 with an asymmetric document/query prefix contract and need these set to
 retrieve correctly.
 
-**Read this before pointing `model` at anything other than
-`bge-small-en-v1.5`.** `low_confidence` and the hybrid RRF fusion score
-used elsewhere in this server are tuned to bge-small's own
-cosine-similarity distribution. Nothing in this codebase validates that a
-different model's distribution is compatible with that tuning — a poor
-fit silently degrades `low_confidence` accuracy and hybrid-mode ranking,
-with **no error raised anywhere**. This is a known, currently open gap
-(see the `TODO(issue #46, model-choice)` comment on
-`_SEMANTIC_CONFIDENCE_THRESHOLD` in `src/pdf_mcp/server.py` and
-[jztan/pdf-mcp#46](https://github.com/jztan/pdf-mcp/issues/46)); there is
-no startup safety check yet that would catch this automatically. Treat
-non-bge-small models on this backend as experimental until that
-recalibration work lands.
+#### `confidence_threshold` — required for a non-bge-small model (issue #46)
+
+`low_confidence` (on `pdf_search`/`pdf_corpus_search` matches) and the
+response-level `all_results_low_confidence`/`confidence_threshold` fields
+are all derived from one cosine-similarity cutoff. That cutoff is tuned to
+`BAAI/bge-small-en-v1.5`'s own cosine distribution — fastembed's default
+model, and the only model this codebase has ever calibrated against. A
+different model (e5, nomic, the Qwen3-Embedding family, ...) produces a
+different distribution, and reusing bge-small's 0.5 for it would silently
+mislabel `low_confidence` with no error anywhere — this was upstream's
+original objection
+([jztan/pdf-mcp#42](https://github.com/jztan/pdf-mcp/issues/42)) to
+allowing arbitrary models at all.
+
+This codebase resolves it as follows, with no config action required
+for the common case:
+
+- **`model` is bge-small-compatible** (its name contains `"bge-small"`,
+  case-insensitively — true for fastembed's default and for a remote
+  server you've pointed at bge-small under that name): `confidence_threshold`
+  defaults to `0.5`, exactly as before this key existed. Nothing to do.
+- **`model` is anything else, and `confidence_threshold` is not set**:
+  `low_confidence`, `all_results_low_confidence`, and
+  `confidence_threshold` all come back **`null`** in every affected
+  response, plus `confidence_unavailable=true` and a
+  `confidence_unavailable_reason` string. This is deliberately a
+  degradation, not a startup failure: encoding, keyword search, and hybrid
+  RRF ranking all still work correctly (see "Is `_RRF_K` affected by model
+  choice?" below) — only the derived confidence signal is unavailable,
+  the same "we don't know, so say so" contract `semantic_unavailable` and
+  `text_coverage` already use elsewhere in this server. A one-time warning
+  is logged at process start explaining the gap.
+- **`confidence_threshold` is set explicitly**: used verbatim, for any
+  backend or model, after validating it is a number in `[-1.0, 1.0]` (the
+  valid range for cosine similarity). This is the only way to get
+  `low_confidence` for a non-bge-small model.
+
+To get a real number for case 3 instead of guessing one, run:
+
+```bash
+python scripts/calibrate_confidence_threshold.py \
+    --base-url http://localhost:8000/v1 \
+    --model nomic-embed-text \
+    --query-prefix "search_query: " \
+    --document-prefix "search_document: "
+```
+
+This is a manual/offline tool (like `scripts/benchmark_embedding_models.py`
+— not run in CI): it re-embeds `benchmark_data/ground_truth.json`'s
+hand-annotated pages and queries against your live endpoint, scores every
+(query, page) pair by cosine similarity, and sweeps candidate thresholds to
+find the one with the best F1 (the harmonic mean of precision and recall —
+chosen because there's no natural recall target to fix in advance, unlike
+a ranking benchmark with a known k; the script also prints the winning
+threshold's precision/recall so you can judge the trade-off yourself).
+It prints a `[embedding]` block with the suggested `confidence_threshold`
+to paste into `config.toml`. Requires the endpoint in `--base-url` to be
+reachable; nothing here is fabricated or assumed without it.
+
+**Is `_RRF_K` (the hybrid rank-fusion constant) affected by model
+choice?** No. `_rrf_fuse` in `src/pdf_mcp/server.py` fuses purely by
+RANK (1st, 2nd, 3rd place in each ranked list), never by the raw
+cosine/BM25 score magnitude — a different embedding model reorders which
+pages land in which rank, but the fusion arithmetic itself doesn't care
+what the underlying cosine values were. An earlier draft of this
+codebase's docs and code comments claimed `_RRF_K` was also
+model-distribution-sensitive; that was checked while building the
+`confidence_threshold` config knob above and found to be incorrect, and
+has been corrected here and in `src/pdf_mcp/server.py`.
 
 The vector cache is namespaced by endpoint, model, and prefix pair
 (`openai:<host>[:<port>]/<model>[@<prefix-hash>]`), so pointing at a
@@ -319,8 +375,11 @@ you have already verified out-of-band.
 
 **This check does not run, and cannot help, for a genuinely different
 model** (there is no bge-small-shaped reference to compare a `bge-m3` or
-`Qwen3-Embedding` response against) — see `confidence_threshold` below for
-that case instead.
+`Qwen3-Embedding` response against) — see `confidence_threshold` above for
+that case instead. Model choice beyond the confidence-threshold gap
+remains experimental: treat a non-bge-small model on this backend as
+something you've tested yourself, not something this codebase validates
+end-to-end.
 
 ### Docker deployment notes
 

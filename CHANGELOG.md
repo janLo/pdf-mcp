@@ -30,17 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A startup safety check (`src/pdf_mcp/remote_embedding_check.py`) guards
   the bge-small case: pdf-mcp cannot see which model actually sits behind
-  `base_url`, so once at startup it embeds a handful of fixed reference
-  sentences through the configured endpoint and compares them by cosine
-  similarity to stored local-fastembed bge-small reference vectors
-  (`src/pdf_mcp/bge_small_reference.json`). If the minimum per-sentence
-  cosine drops below 0.999, the server logs a warning and falls back to
-  local fastembed for the rest of the process instead of silently serving
-  vectors from the wrong space. Opt out with `[embedding].verify_startup =
-  false`. This check is scoped to bge-small-compatible model names (see
-  `embedder.is_bge_small_compatible`) -- it cannot validate an
-  intentionally *different* model, since it has nothing bge-small-shaped
-  to compare against; see the arbitrary-model caveat below for that case.
+  `base_url`, so once at startup, for a bge-small-compatible `model` (see
+  `embedder.is_bge_small_compatible`), it embeds a handful of fixed
+  reference sentences through the configured endpoint and compares them
+  by cosine similarity to stored local-fastembed bge-small reference
+  vectors (`src/pdf_mcp/bge_small_reference.json`). If the minimum
+  per-sentence cosine drops below 0.999, the server logs a warning and
+  falls back to local fastembed for the rest of the process instead of
+  silently serving vectors from the wrong space. Opt out with
+  `[embedding].verify_startup = false`. This check cannot help for an
+  intentionally *different* model -- there's nothing bge-small-shaped to
+  compare against -- see the confidence-threshold caveat below for that
+  case instead.
 
 - **`pdf-mcp-warm`: an offline entry point that warms a whole corpus to
   completion, outside any MCP client.** `pdf_corpus_warm` (the tool) caps
@@ -88,17 +89,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md) ([#41](https://github.com/jztan/pdf-mcp/pull/41)).
 
   **The arbitrary-model surface (a `model` other than bge-small, plus
-  `document_prefix`/`query_prefix`/`dimensions`) is experimental and its
-  main caveat is still being worked through.** `low_confidence` elsewhere
-  in this server is tuned to `BAAI/bge-small-en-v1.5`'s own
-  cosine-similarity distribution. Pointing this backend at a different
-  model does not, on its own, validate whether that model's cosine
-  distribution is compatible with that tuning -- a poor fit degrades
-  `low_confidence` accuracy silently, with no error raised. See the
-  `TODO(issue #46, model-choice)` comment on `_SEMANTIC_CONFIDENCE_THRESHOLD`
-  in `src/pdf_mcp/server.py`. (`_RRF_K`'s hybrid rank-fusion, by contrast,
-  fuses purely by rank, never by score magnitude, so it is not affected by
-  model choice -- confirmed by reading `_rrf_fuse` directly.)
+  `document_prefix`/`query_prefix`/`dimensions`) is experimental; its main
+  caveat now has a real config knob and a calibration script, not a full
+  fix.** `low_confidence` (and the response-level
+  `all_results_low_confidence`/`confidence_threshold`) are derived from a
+  cosine-similarity cutoff tuned to `BAAI/bge-small-en-v1.5`'s own
+  distribution. A new `[embedding].confidence_threshold` key resolves
+  what happens for a different model: unchanged (the built-in `0.5`) for
+  the default fastembed backend regardless of local model choice (a
+  pre-existing, separately-tracked concern, not new here), and for an
+  "openai" backend recognized as bge-small-compatible; **`null`, plus
+  `confidence_unavailable=true` and a one-time startup warning**, for a
+  genuinely different *remote* model until `confidence_threshold` is set
+  explicitly -- rather than silently reusing a threshold tuned for a
+  different model's distribution, which was the original failure mode
+  ([jztan/pdf-mcp#42](https://github.com/jztan/pdf-mcp/issues/42)).
+  `scripts/calibrate_confidence_threshold.py` (manual/offline, like
+  `scripts/benchmark_embedding_models.py` -- not run in CI) derives a
+  starting value: it re-embeds `benchmark_data/ground_truth.json` against
+  a live endpoint and sweeps candidate thresholds for the best F1 (a
+  useful starting point, not a substitute for judgment -- the ground
+  truth's relevant:irrelevant page ratio differs from what `low_confidence`
+  actually sees at query time, top-k retrieved pages only). See
+  `docs/configuration.md` for the full contract.
+
+  `_RRF_K`'s hybrid rank-fusion was checked against a similar claim while
+  building this and found NOT to be model-distribution-sensitive:
+  `_rrf_fuse` in `src/pdf_mcp/server.py` fuses by rank, never by raw score
+  magnitude, so a different embedding model reorders inputs but never
+  changes the fusion arithmetic. (An earlier commit on this same branch's
+  `TODO(issue #46, model-choice)` comment claimed otherwise before this
+  was checked; corrected here.)
+
+  What is still open: there is no way for pdf-mcp to verify a
+  non-bge-small remote endpoint is actually serving the `model` named in
+  config (the startup safety check above only covers the bge-small case).
+  Treat non-bge-small models on this backend as experimental until you
+  have calibrated and set `confidence_threshold` yourself.
 
 - **One-click install for Claude Desktop.** Every release now ships a
   `pdf-mcp-<version>.mcpb` bundle. Download it and drag it onto Claude
