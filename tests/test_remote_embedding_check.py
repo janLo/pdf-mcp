@@ -35,8 +35,9 @@ class _FakeConfig:
     `disable_remote_embedding_backend()`, so a real PDFConfig (with its own
     config.toml parsing) is unnecessary here."""
 
-    def __init__(self, spec: "RemoteSpec | None"):
+    def __init__(self, spec: "RemoteSpec | None", verify_startup: bool = True):
         self.remote_embedding_spec = spec
+        self.remote_embedding_verify_startup = verify_startup
         self.disable_calls = 0
 
     def disable_remote_embedding_backend(self) -> None:
@@ -276,3 +277,54 @@ class TestConfigureRemoteBackend:
         assert result.active is False
         assert calls == [None]
         assert cfg.disable_calls == 1
+
+    def test_verify_startup_false_skips_the_check(self, monkeypatch):
+        """Issue #46: an endpoint already verified out-of-band can opt out
+        of the round-trip via [embedding].verify_startup = false -- the
+        spec is registered directly, never falling back."""
+        import pdf_mcp.embedder as emb
+
+        checked = []
+        monkeypatch.setattr(
+            "pdf_mcp.remote_embedding_check.verify_remote_backend",
+            lambda spec: checked.append(spec) or verify_remote_backend(spec),
+        )
+        calls = []
+        monkeypatch.setattr(emb, "configure_remote", calls.append)
+
+        spec = _spec()
+        cfg = _FakeConfig(spec=spec, verify_startup=False)
+        result = configure_remote_backend(cfg)
+
+        assert result.spec is spec
+        assert result.check_result is None
+        assert result.active is True
+        assert calls == [spec]
+        assert checked == []  # the check itself never ran
+        assert cfg.disable_calls == 0
+
+    def test_non_bge_small_model_skips_the_check(self, monkeypatch):
+        """Issue #46: this check has nothing but a bge-small-shaped
+        reference to compare against, so it must not run for a `model`
+        that intentionally names something else -- running it anyway
+        would spuriously fail and silently defeat model choice."""
+        import pdf_mcp.embedder as emb
+
+        checked = []
+        monkeypatch.setattr(
+            "pdf_mcp.remote_embedding_check.verify_remote_backend",
+            lambda spec: checked.append(spec) or verify_remote_backend(spec),
+        )
+        calls = []
+        monkeypatch.setattr(emb, "configure_remote", calls.append)
+
+        spec = _spec(model="bge-m3")
+        cfg = _FakeConfig(spec=spec)
+        result = configure_remote_backend(cfg)
+
+        assert result.spec is spec
+        assert result.check_result is None
+        assert result.active is True
+        assert calls == [spec]
+        assert checked == []
+        assert cfg.disable_calls == 0

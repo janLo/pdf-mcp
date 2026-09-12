@@ -45,6 +45,18 @@ neither confirmed relevant nor annotated is assumed irrelevant), documented
 here rather than silently baked in; it is the same assumption
 scripts/benchmark_embedding_models.py's recall/RR metrics rest on.
 
+**Caveat: this is a starting point, not a validated production value.**
+The sweep scores EVERY page in each ground-truth document against each
+query (so a 100-page PDF with 2 relevant pages contributes ~50 irrelevant
+pairs per relevant one). `low_confidence` in production never sees that
+population -- it only ever runs on the handful of pages that already
+survived top-k retrieval, a much less imbalanced set. F1 under heavy class
+imbalance skews toward whatever keeps precision high, so the threshold
+this prints is a reasonable place to start, not a number to paste in and
+forget; treat the reported precision/recall as directional, and adjust
+based on how `low_confidence` actually behaves on your own real queries
+before relying on it.
+
 Run:
     python scripts/calibrate_confidence_threshold.py \\
         --base-url http://localhost:8000/v1 \\
@@ -309,10 +321,11 @@ def main() -> None:
     # helper scripts/benchmark_embedding_models.py uses for the same
     # ground-truth file.
     import pdf_mcp.server as server_module
+    from pdf_mcp.remote_embedder import _redact_base_url
 
     print(
         f"Calibrating confidence_threshold for model={args.model!r} "
-        f"at {args.base_url!r} ..."
+        f"at {_redact_base_url(args.base_url)!r} ..."
     )
     pairs = collect_pairs(ground_truth, spec, resolve_pdf=server_module._resolve_path)
     if not pairs:

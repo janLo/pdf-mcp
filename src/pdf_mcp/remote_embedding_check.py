@@ -208,11 +208,14 @@ class RemoteBackendSetup:
     """What `configure_remote_backend()` did, for the caller to log/print.
 
     ``spec`` is the ORIGINALLY configured spec (before any fallback) -- None
-    when ``[embedding].backend`` isn't "openai", in which case
-    ``check_result`` is also None (nothing to check). ``active`` is whether
-    the remote backend is actually registered with `embedder` after this
-    call -- False whenever `spec` is None, and also False when a configured
-    spec failed the safety check and this fell back to local fastembed.
+    when ``[embedding].backend`` isn't "openai". ``check_result`` is None
+    both when there's nothing to check (`spec` is None) AND when the check
+    was skipped (`verify_startup = false`, or a non-bge-small `model` --
+    see `configure_remote_backend`'s docstring) -- `active` is what tells
+    the caller whether the remote backend actually ended up registered in
+    that case. ``active`` is False whenever `spec` is None, and also False
+    when a configured spec failed the safety check and this fell back to
+    local fastembed.
     """
 
     spec: "RemoteSpec | None"
@@ -244,6 +247,20 @@ def configure_remote_backend(pdf_config: Any) -> RemoteBackendSetup:
     convention (a process that never touches semantic search shouldn't pay
     fastembed's import cost).
 
+    The safety check itself is skipped -- the spec is registered directly,
+    unverified -- in two cases (issue #46, model choice):
+
+    - `pdf_config.remote_embedding_verify_startup` is False: an endpoint
+      already verified out-of-band, opted out via `[embedding].
+      verify_startup = false`.
+    - `spec.model` is not bge-small-compatible (`embedder.
+      is_bge_small_compatible`): this check only has a bge-small-shaped
+      reference to compare against, so running it against a `model` that
+      intentionally names something else would spuriously fail and
+      silently force every non-bge-small configuration back onto local
+      fastembed, defeating model choice entirely. A non-bge-small model's
+      own safety net is `pdf_config.confidence_threshold`, not this check.
+
     Does NOT log or print anything itself -- the returned
     `RemoteBackendSetup` carries everything needed for that, so each caller
     reports it in its own idiom (server.py's `logging`, the CLI's
@@ -255,6 +272,12 @@ def configure_remote_backend(pdf_config: Any) -> RemoteBackendSetup:
     if spec is None:
         embedder.configure_remote(None)
         return RemoteBackendSetup(spec=None, check_result=None, active=False)
+
+    if not pdf_config.remote_embedding_verify_startup or not (
+        embedder.is_bge_small_compatible(spec.model)
+    ):
+        embedder.configure_remote(spec)
+        return RemoteBackendSetup(spec=spec, check_result=None, active=True)
 
     check_result = verify_remote_backend(spec)
     if not check_result.ok:

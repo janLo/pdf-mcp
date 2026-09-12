@@ -5059,13 +5059,36 @@ class TestPdfCorpusSearchConfidenceUnavailable:
         # Threshold unknown -> low_confidence is never a silent True.
         for m in result["matches"]:
             assert m["low_confidence"] in (False, None)
-        # all_results_low_confidence is None iff at least one match's
-        # low_confidence is itself unknown (None) -- not automatic just
-        # because the threshold is unknown, since keyword-hit pages stay
-        # confidently False regardless.
+
+        # Cross-check against an independent keyword-only call for the same
+        # corpus/query, rather than recomputing all_results_low_confidence's
+        # own aggregation rule here (which couldn't catch a bug in that
+        # rule, since it would just reproduce it). A page the keyword arm
+        # itself found must report low_confidence=False (confident, keyword
+        # hit) -- proving the False case is genuinely earned, not just
+        # asserted; the None case (a purely semantic-only hit) is already
+        # covered concretely by test_semantic_mode above.
+        keyword_only = pdf_corpus_search(str(corpus_dir), "budget", mode="keyword")
+        keyword_hit_paths = {m["path"] for m in keyword_only["matches"]}
+        by_path = {m["path"]: m for m in result["matches"]}
+        saw_false = False
+        for path, m in by_path.items():
+            if path in keyword_hit_paths:
+                assert m["low_confidence"] is False, (
+                    f"{path} had a keyword hit but hybrid mode still "
+                    "reported low_confidence as unknown"
+                )
+                saw_false = True
+        assert saw_false, "expected at least one keyword-confident match"
+
+        # The aggregate flag must itself be None whenever any match's own
+        # low_confidence is unknown (it cannot claim "all results confident"
+        # while one of them is unverifiable).
         flags = [m["low_confidence"] for m in result["matches"]]
-        expected = None if any(f is None for f in flags) else all(flags)
-        assert result["all_results_low_confidence"] == expected
+        if any(f is None for f in flags):
+            assert result["all_results_low_confidence"] is None
+        else:
+            assert result["all_results_low_confidence"] == all(flags)
 
 
 class TestPdfCorpusSearchSourceLabel:
