@@ -191,6 +191,7 @@ api_key_env = "MY_EMBED_API_KEY"  # optional; names an env var, never a
 timeout = 60                      # seconds, per request (default 60)
 batch_size = 32                   # texts per request (default 32)
 max_concurrency = 4               # concurrent in-flight requests (default 4)
+verify_startup = true             # cosine-parity safety check (default true)
 ```
 
 `base_url` and `model` are required whenever `backend = "openai"`. Every
@@ -219,11 +220,22 @@ responsibility to point this at a server you trust.
 `server_info`'s `search` block reports `embedding_backend` ("fastembed" or
 "openai") and, for the remote backend, `embedding_endpoint` (host:port
 only) once the endpoint is configured and `embedding_model` resolves
-successfully. There is no startup validation yet that a remote server is
-actually *serving* bge-small rather than misconfigured to a different
-model or quantization silently returning a divergent cosine distribution
-— see the CHANGELOG note on this and issue #46 for the planned safety
-check.
+successfully.
+
+**Startup safety check.** pdf-mcp cannot see which model actually sits
+behind `base_url` — a misconfigured endpoint could silently serve a
+different model, quantization, or pooling strategy, each of which shifts
+the cosine-similarity distribution `low_confidence`/RRF fusion are tuned
+against. So, once at startup (before the first real request, and before
+`embedder.configure_remote` is called), pdf-mcp embeds a handful of fixed
+reference sentences through the configured endpoint and compares each
+vector to a stored local-fastembed `bge-small-en-v1.5` reference by cosine
+similarity (`src/pdf_mcp/remote_embedding_check.py`). If the *minimum*
+per-sentence cosine drops below `0.99`, the server logs a warning and falls
+back to the local fastembed backend for the rest of the process — it never
+crashes and never silently serves vectors from the wrong space. Set
+`verify_startup = false` to skip this one-time round-trip for an endpoint
+you have already verified out-of-band.
 
 ### Docker deployment notes
 

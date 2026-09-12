@@ -50,6 +50,13 @@ class PDFConfig:
             config_path = _DEFAULT_CONFIG_PATH
         self._config_path = config_path
         self._data = self._load(config_path)
+        # Set by disable_remote_embedding_backend() when the startup safety
+        # check (issue #42, remote_embedding_check) decides the configured
+        # remote endpoint cannot be trusted. Once set, embedding_backend,
+        # embedding_model, and remote_embedding_spec all report the local
+        # fastembed default for the rest of this process -- see
+        # disable_remote_embedding_backend's docstring.
+        self._remote_backend_disabled = False
 
     @staticmethod
     def _load(path: Path) -> dict[str, Any]:
@@ -82,6 +89,27 @@ class PDFConfig:
                     return
             raise ValueError(f"Path not in allowed list: {path}")
 
+    def disable_remote_embedding_backend(self) -> None:
+        """Force the local fastembed default for the rest of this process.
+
+        Called exactly once, by server.py's startup safety check
+        (`remote_embedding_check`, issue #42), when a configured
+        ``[embedding].backend = "openai"`` endpoint fails the cosine-parity
+        check against stored fastembed reference vectors -- wrong model,
+        wrong quantization, wrong pooling, or simply unreachable. After
+        this call, `embedding_backend`, `embedding_model`, and
+        `remote_embedding_spec` all behave exactly as if
+        ``[embedding].backend`` had never been set to "openai", regardless
+        of what config.toml says -- this is what makes the fallback safe:
+        every call site that resolves an embedding identity from this
+        object (search-capability probing, cache identity, the actual
+        encode() dispatch) sees the same, consistent, local-only state, so
+        nothing downstream can end up with `embedding_model` naming a
+        remote identity that `embedder.configure_remote` was never told
+        about. Idempotent.
+        """
+        self._remote_backend_disabled = True
+
     @property
     def embedding_backend(self) -> str:
         """``[embedding].backend``: "fastembed" (default) or "openai".
@@ -92,7 +120,13 @@ class PDFConfig:
         it is scoped to that one model in this version. Validated eagerly at
         load time -- this module never touches [embedding] lazily, matching
         the rest of this class.
+
+        Reports "fastembed" unconditionally once
+        `disable_remote_embedding_backend` has been called, regardless of
+        what config.toml says -- see that method's docstring.
         """
+        if self._remote_backend_disabled:
+            return "fastembed"
         backend = self._data.get("embedding", {}).get("backend", "fastembed")
         if backend not in ("fastembed", "openai"):
             raise ValueError(
@@ -120,7 +154,15 @@ class PDFConfig:
         is informational/cache-naming only -- see remote_embedding_spec's
         docstring for why it does not change encoding behavior in this
         version.
+
+        After `disable_remote_embedding_backend` has been called, always
+        returns `DEFAULT_MODEL` -- NOT `[embedding].model` (that key, when
+        present, names the *remote* model label, which is meaningless to
+        fastembed's local catalog and would raise in `embedder.
+        check_available` if used here).
         """
+        if self._remote_backend_disabled:
+            return DEFAULT_MODEL
         if self.embedding_backend == "fastembed":
             model: str = self._data.get("embedding", {}).get("model", DEFAULT_MODEL)
             return model
@@ -243,6 +285,32 @@ class PDFConfig:
             batch_size=batch_size,
             max_concurrency=max_concurrency,
         )
+
+    @property
+    def remote_embedding_verify_startup(self) -> bool:
+        """``[embedding].verify_startup``: default True.
+
+        Gates the cosine-parity safety check (`remote_embedding_check`,
+        issue #42) that runs once at startup when the "openai" backend is
+        configured: it embeds a handful of fixed reference sentences
+        through the remote endpoint and compares them to stored local
+        fastembed vectors, falling back to local fastembed if they don't
+        match closely enough. True by default -- the check is what makes
+        the remote backend trustworthy without pdf-mcp being able to see
+        what model the endpoint actually serves. Set to false only for an
+        endpoint whose identity is already verified out-of-band and where
+        the extra startup round-trip is unwanted (e.g. a very slow cold
+        start some servers have on the first request).
+
+        Only read when `[embedding].backend = "openai"`; meaningless (and
+        not read) for the default fastembed backend.
+        """
+        value = self._data.get("embedding", {}).get("verify_startup", True)
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"[embedding].verify_startup must be true or false, got " f"{value!r}"
+            )
+        return value
 
     @property
     def ocr_auto_install(self) -> bool | None:
