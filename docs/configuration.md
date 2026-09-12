@@ -178,6 +178,14 @@ threshold recalibration a different model would need, is tracked
 separately (see
 [jztan/pdf-mcp#46](https://github.com/jztan/pdf-mcp/issues/46)).
 
+Measured against a real quantized deployment (Q8_0 GGUF over `llama-server`
+on Vulkan): cosine parity against local fastembed is 0.99989 minimum /
+0.99993 mean over 36 real page-chunk passages
+([`bge_small_cosine_parity_results.md`](../benchmark_data/bge_small_cosine_parity_results.md)),
+and throughput on 600 real ~300-token warm chunks is 4.2-4.8x fastembed CPU
+depending on concurrency
+([`bge_small_throughput_results.md`](../benchmark_data/bge_small_throughput_results.md)).
+
 ```toml
 [embedding]
 backend = "openai"

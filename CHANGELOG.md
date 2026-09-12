@@ -31,13 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential) once the backend loads successfully. See
   `docs/configuration.md` for the full key reference.
 
-  Note: this change does not yet include the startup cosine safety check
-  (embed fixed reference sentences and compare against stored fastembed
-  bge-small reference vectors, falling back to CPU with a warning below a
-  ~0.99 cosine threshold) that a remote server's own bge-small build should
-  be validated against before being trusted for scoring. That safety net,
-  and a benchmark of this backend against the bundled fastembed path, are
-  both tracked as follow-up work and are not included in this change.
+  A startup safety check (`src/pdf_mcp/remote_embedding_check.py`) now
+  guards this: pdf-mcp cannot see which model actually sits behind
+  `base_url`, so once at startup it embeds a handful of fixed reference
+  sentences through the configured endpoint and compares them by cosine
+  similarity to stored local-fastembed bge-small reference vectors
+  (`src/pdf_mcp/bge_small_reference.json`). If the minimum per-sentence
+  cosine drops below 0.99, the server logs a warning and falls back to
+  local fastembed for the rest of the process instead of silently serving
+  vectors from the wrong space. Opt out with `[embedding].verify_startup =
+  false`.
+
+  Measured against a real quantized deployment (Q8_0 GGUF over
+  `llama-server` on Vulkan): cosine parity against local fastembed is
+  0.99989 minimum / 0.99993 mean over 36 real page-chunk passages
+  (`benchmark_data/bge_small_cosine_parity_results.md`), and throughput on
+  600 real ~300-token warm chunks from `pages/corpus/*.pdf` is 4.2-4.8x
+  fastembed CPU depending on concurrency
+  (`benchmark_data/bge_small_throughput_results.md`).
 
 - **One-click install for Claude Desktop.** Every release now ships a
   `pdf-mcp-<version>.mcpb` bundle. Download it and drag it onto Claude
