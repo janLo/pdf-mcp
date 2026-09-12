@@ -313,6 +313,17 @@ It prints a `[embedding]` block with the suggested `confidence_threshold`
 to paste into `config.toml`. Requires the endpoint in `--base-url` to be
 reachable; nothing here is fabricated or assumed without it.
 
+Verified end-to-end against a real live endpoint (`bge-m3` Q8_0 GGUF over
+`llama-server` on Vulkan, the same setup the narrow branch's benchmarks
+used): `threshold=0.57, precision=0.444, recall=0.364, f1=0.400` over 225
+(query, page) pairs from `benchmark_data/ground_truth.json` — a real,
+non-fabricated run, not just the synthetic-data unit tests
+(`tests/test_calibrate_confidence_threshold.py`). The modest
+precision/recall here is expected and consistent with the imbalance
+caveat above, not a bug: this ground truth's per-page negative:positive
+ratio is far more skewed than what `low_confidence` actually sees at
+query time (top-k retrieved pages only).
+
 **Is `_RRF_K` (the hybrid rank-fusion constant) affected by model
 choice?** No. `_rrf_fuse` in `src/pdf_mcp/server.py` fuses purely by
 RANK (1st, 2nd, 3rd place in each ranked list), never by the raw
