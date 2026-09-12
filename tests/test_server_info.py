@@ -134,6 +134,34 @@ class TestServerInfo:
             feats = _detect_features()
         assert feats["corpus"]["modes_available"] == ["keyword", "semantic", "auto"]
 
+    def test_server_info_reports_fastembed_backend(self):
+        with patch.object(embedder, "check_available", return_value=None):
+            feats = _detect_features()
+        search = feats["search"]
+        assert search["embedding_backend"] == "fastembed"
+        assert "embedding_endpoint" not in search
+
+    def test_server_info_reports_remote_backend_and_endpoint(
+        self, tmp_path, monkeypatch
+    ):
+        from pdf_mcp.config import PDFConfig
+
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://user:sk-secret@localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+            encoding="utf-8",
+        )
+        remote_config = PDFConfig(config_path=cfg)
+        monkeypatch.setattr(server, "pdf_config", remote_config)
+        with patch.object(embedder, "check_available", return_value=None):
+            feats = _detect_features()
+        search = feats["search"]
+        assert search["embedding_backend"] == "openai"
+        assert search["embedding_endpoint"] == "localhost:8000"
+        assert "sk-secret" not in str(search)
+
 
 class TestDocumentRoots:
     """Root derivation: allow globs reduced to directories a caller can use."""

@@ -22,6 +22,7 @@ def _fresh_model_singleton(monkeypatch):
 
     monkeypatch.setattr(emb, "_model", None)
     monkeypatch.setattr(emb, "_model_name_loaded", None)
+    monkeypatch.setattr(emb, "_remote_spec", None)
 
 
 def test_check_available_raises_when_fastembed_missing():
@@ -600,3 +601,78 @@ def test_cpu_encode_empty_list():
 
     assert result.size == 0
     assert model.calls == []
+
+
+class TestRemoteDispatch:
+    """`model_name` starting with "openai:" routes to remote_embedder,
+    never touching fastembed. See embedder.py's module docstring."""
+
+    def _spec(self):
+        from pdf_mcp.remote_embedder import RemoteSpec
+
+        return RemoteSpec(base_url="http://localhost:8000/v1", model="bge-small")
+
+    def test_check_available_without_configure_remote_raises(self):
+        import pdf_mcp.embedder as emb
+
+        with pytest.raises(ValueError, match="no remote backend is configured"):
+            emb.check_available("openai:localhost:8000/bge-small")
+
+    def test_check_available_with_configured_spec_is_offline_only(self):
+        import pdf_mcp.embedder as emb
+
+        emb.configure_remote(self._spec())
+        with patch("pdf_mcp.remote_embedder.encode") as mock_encode:
+            emb.check_available("openai:localhost:8000/bge-small")
+        mock_encode.assert_not_called()
+
+    def test_encode_routes_to_remote_embedder(self):
+        import pdf_mcp.embedder as emb
+
+        emb.configure_remote(self._spec())
+        with patch("pdf_mcp.remote_embedder.encode") as mock_encode:
+            mock_encode.return_value = np.array([[3.0, 4.0, 0.0]], dtype=np.float32)
+            result = emb.encode(["hello"], "openai:localhost:8000/bge-small")
+        mock_encode.assert_called_once()
+        args, _ = mock_encode.call_args
+        assert args[0] == ["hello"]
+        assert args[1] is emb._remote_spec
+        np.testing.assert_allclose(result[0], [0.6, 0.8, 0.0])
+
+    def test_encode_query_routes_to_remote_embedder(self):
+        import pdf_mcp.embedder as emb
+
+        emb.configure_remote(self._spec())
+        with patch("pdf_mcp.remote_embedder.encode") as mock_encode:
+            mock_encode.return_value = np.array([[1.0, 0.0]], dtype=np.float32)
+            result = emb.encode_query("hi", "openai:localhost:8000/bge-small")
+        assert result.shape == (2,)
+
+    def test_encode_remote_without_configure_raises(self):
+        import pdf_mcp.embedder as emb
+
+        with pytest.raises(ValueError, match="no remote backend is configured"):
+            emb.encode(["hi"], "openai:localhost:8000/bge-small")
+
+    def test_encode_remote_empty_list_makes_no_call(self):
+        import pdf_mcp.embedder as emb
+
+        emb.configure_remote(self._spec())
+        with patch("pdf_mcp.remote_embedder.encode") as mock_encode:
+            result = emb.encode([], "openai:localhost:8000/bge-small")
+        mock_encode.assert_not_called()
+        assert result.size == 0
+
+    def test_fastembed_identity_never_touches_remote_spec(self):
+        """A bare fastembed model name is unaffected even when a remote
+        spec happens to be registered."""
+        import pdf_mcp.embedder as emb
+
+        emb.configure_remote(self._spec())
+        model = _recording_model(["CPUExecutionProvider"])
+        emb2 = _with_model(model)
+        try:
+            result = emb2.encode(["hello"], DEFAULT)
+        finally:
+            _reset()
+        assert result.shape[0] == 1

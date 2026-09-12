@@ -198,6 +198,21 @@ cache = PDFCache(
 pdf_config = PDFConfig()
 url_fetcher = URLFetcher(cache_dir=cache.cache_dir / "downloads", config=pdf_config)
 
+# Register the remote embedding spec (if [embedding].backend = "openai") once,
+# here, rather than at every encode()/encode_query() call site -- see
+# embedder.configure_remote's docstring. None (the fastembed backend, the
+# default) is a valid, cheap call. Import is local, matching every other
+# `embedder` use in this module, so fastembed's own import cost isn't paid
+# by processes that never touch semantic search. A misconfigured
+# [embedding].backend = "openai" (bad base_url, unset api_key_env, ...)
+# fails fast here, at process start, with the same ValueError contract
+# PDFConfig already has, rather than surfacing later as a confusing
+# encode-time error.
+from . import embedder as _embedder_startup  # noqa: E402
+
+_embedder_startup.configure_remote(pdf_config.remote_embedding_spec)
+del _embedder_startup
+
 # Update check: bundle installs only (the bundle sets PDF_MCP_UPDATE_CHECK),
 # and `[updates] check` in the config always wins. Claude Desktop does not
 # show server `instructions` to the model, so the notice rides on the first
@@ -437,6 +452,20 @@ def _detect_features() -> dict[str, Any]:
     else:
         search["modes_available"] = ["keyword", "semantic", "auto"]
         search["embedding_model"] = model_name
+        search["embedding_backend"] = pdf_config.embedding_backend
+        remote_spec = pdf_config.remote_embedding_spec
+        if remote_spec is not None:
+            # Endpoint host[:port] only -- never the api_key, and never any
+            # userinfo (user:pass@) a user's base_url might embed. netloc
+            # would include both; hostname/port strips them the same way
+            # remote_embedder._redact_base_url does.
+            from urllib.parse import urlsplit
+
+            parts = urlsplit(remote_spec.base_url)
+            endpoint = parts.hostname or ""
+            if parts.port:
+                endpoint = f"{endpoint}:{parts.port}"
+            search["embedding_endpoint"] = endpoint
 
     return {
         "extraction": {

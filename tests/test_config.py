@@ -270,3 +270,163 @@ class TestUpdateCheckConfig:
         cfg.write_text('[updates]\ncheck = "no"\n', encoding="utf-8")
         with pytest.raises(ValueError, match=r"\[updates\] check"):
             PDFConfig(config_path=cfg).update_check
+
+
+class TestEmbeddingBackend:
+    def test_default_is_fastembed(self, tmp_path):
+        config = PDFConfig(config_path=tmp_path / "none.toml")
+        assert config.embedding_backend == "fastembed"
+        assert config.remote_embedding_spec is None
+
+    def test_fastembed_model_name_unchanged(self, tmp_path):
+        """No cache should be invalidated by this backend existing."""
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            '[embedding]\nmodel = "BAAI/bge-base-en-v1.5"\n', encoding="utf-8"
+        )
+        config = PDFConfig(config_path=cfg)
+        assert config.embedding_backend == "fastembed"
+        assert config.embedding_model == "BAAI/bge-base-en-v1.5"
+
+    def test_invalid_backend_raises(self, tmp_path):
+        cfg = tmp_path / "config.toml"
+        cfg.write_text('[embedding]\nbackend = "bogus"\n', encoding="utf-8")
+        with pytest.raises(ValueError, match=r"\[embedding\].backend"):
+            PDFConfig(config_path=cfg).embedding_backend
+
+    def _write(self, tmp_path, body: str) -> PDFConfig:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(body, encoding="utf-8")
+        return PDFConfig(config_path=cfg)
+
+    def test_openai_backend_requires_base_url(self, tmp_path):
+        config = self._write(
+            tmp_path, '[embedding]\nbackend = "openai"\nmodel = "bge-small-en-v1.5"\n'
+        )
+        with pytest.raises(ValueError, match="base_url is required"):
+            config.remote_embedding_spec
+
+    def test_openai_backend_requires_model(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\nbase_url = "http://localhost:8000/v1"\n',
+        )
+        with pytest.raises(ValueError, match="model is required"):
+            config.remote_embedding_spec
+
+    def test_openai_backend_rejects_non_http_base_url(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\nbase_url = "ftp://x"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        with pytest.raises(ValueError, match="http\\(s\\) URL"):
+            config.remote_embedding_spec
+
+    def test_openai_backend_minimal_config(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        spec = config.remote_embedding_spec
+        assert spec is not None
+        assert spec.base_url == "http://localhost:8000/v1"
+        assert spec.model == "bge-small-en-v1.5"
+        assert spec.api_key is None
+        assert spec.timeout == 60.0
+        assert spec.batch_size == 32
+        assert spec.max_concurrency == 4
+
+    def test_openai_backend_full_config(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n'
+            "timeout = 30\n"
+            "batch_size = 8\n"
+            "max_concurrency = 2\n",
+        )
+        spec = config.remote_embedding_spec
+        assert spec is not None
+        assert spec.timeout == 30.0
+        assert spec.batch_size == 8
+        assert spec.max_concurrency == 2
+
+    def test_openai_backend_api_key_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MY_EMBED_KEY", "sk-secret-value")
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n'
+            'api_key_env = "MY_EMBED_KEY"\n',
+        )
+        spec = config.remote_embedding_spec
+        assert spec is not None
+        assert spec.api_key == "sk-secret-value"
+        # the key itself never appears in the config.toml the fixture wrote
+        assert "sk-secret-value" not in config.config_path.read_text()
+
+    def test_openai_backend_missing_api_key_env_raises(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MISSING_EMBED_KEY", raising=False)
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n'
+            'api_key_env = "MISSING_EMBED_KEY"\n',
+        )
+        with pytest.raises(ValueError, match="MISSING_EMBED_KEY"):
+            config.remote_embedding_spec
+
+    @pytest.mark.parametrize(
+        "bad_key",
+        [
+            "dimensions = 384",
+            'document_prefix = "passage: "',
+            'query_prefix = "query: "',
+        ],
+    )
+    def test_openai_backend_rejects_model_choice_keys(self, tmp_path, bad_key):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n' + bad_key + "\n",
+        )
+        with pytest.raises(ValueError, match="not supported"):
+            config.remote_embedding_spec
+
+    def test_openai_backend_rejects_bad_timeout(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n'
+            "timeout = -1\n",
+        )
+        with pytest.raises(ValueError, match="timeout"):
+            config.remote_embedding_spec
+
+    def test_openai_backend_rejects_bad_batch_size(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n'
+            "batch_size = 0\n",
+        )
+        with pytest.raises(ValueError, match="batch_size"):
+            config.remote_embedding_spec
+
+    def test_embedding_model_for_openai_backend_is_namespaced(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        assert config.embedding_model == "openai:localhost:8000/bge-small-en-v1.5"
