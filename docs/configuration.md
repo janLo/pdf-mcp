@@ -37,7 +37,8 @@ starting — it never silently falls back to permissive.
 section-granularity `pdf_search`; see [docs/response-limits.md](response-limits.md).
 
 **`[embedding]`** — the semantic-search model; the default shown above is
-`BAAI/bge-small-en-v1.5`. See [docs/embedding-models.md](embedding-models.md).
+`BAAI/bge-small-en-v1.5`. See [docs/embedding-models.md](embedding-models.md)
+and "Remote-served bge-small (`[embedding].backend = "openai"`)" below.
 
 **`[content_trust]`** — extends the hidden-text `injection_in_hidden` severity
 hint with your own (including non-English) phrases. They **extend** the built-in
@@ -156,6 +157,73 @@ faster than one large padded batch and holds about 0.7 GB of transient
 encode memory instead of 2.8 GB, with identical vectors. Thread pinning
 was measured on the same machine and does not help: one intra-op thread
 ran as fast as fourteen, so the encode is memory-bound, not compute-bound.
+
+### Remote-served bge-small (`[embedding].backend = "openai"`)
+
+Optional and off by default (`fastembed`, the bundled local path). Points
+semantic search at an OpenAI-compatible `POST /v1/embeddings` HTTP endpoint
+instead of onnxruntime — useful when a server on your network (ollama,
+lemonade, llama-server, vLLM, a hosted provider) can reach a faster compute
+backend than the ones fastembed's onnxruntime wheels support on your
+machine (for example a Vulkan iGPU path on some AMD hardware).
+
+**This is deliberately narrow: the remote endpoint must serve
+`BAAI/bge-small-en-v1.5`** — the same model fastembed uses by default —
+not an arbitrary model. `low_confidence` and the hybrid RRF fusion score
+used elsewhere in this server are tuned to bge-small's cosine-similarity
+distribution; a different model's distribution would silently throw those
+off with no error, which is exactly the failure mode this version avoids
+by not supporting one. General model choice, with the validation and
+threshold recalibration a different model would need, is tracked
+separately (see
+[jztan/pdf-mcp#46](https://github.com/jztan/pdf-mcp/issues/46)).
+
+```toml
+[embedding]
+backend = "openai"
+base_url = "http://localhost:8000/v1"
+model = "bge-small-en-v1.5"       # informational: names the model your
+                                  # server should load, and namespaces the
+                                  # vector cache; does not change how text
+                                  # is encoded (see below)
+api_key_env = "MY_EMBED_API_KEY"  # optional; names an env var, never a
+                                  # literal key in config.toml
+timeout = 60                      # seconds, per request (default 60)
+batch_size = 32                   # texts per request (default 32)
+max_concurrency = 4               # concurrent in-flight requests (default 4)
+```
+
+`base_url` and `model` are required whenever `backend = "openai"`. Every
+other key has the default shown above and may be omitted.
+
+Why `model` doesn't select behavior here: this client applies no
+document/query prefix and validates no output dimension — bge-small needs
+neither. Setting `document_prefix`, `query_prefix`, or `dimensions` under
+`[embedding]` is rejected with a startup `ValueError` rather than silently
+ignored, since a config that needs one of them wants the general-model-
+choice feature this version does not provide.
+
+The vector cache is namespaced by endpoint and model
+(`openai:<host>[:<port>]/<model>`), so pointing at a different server, port,
+or model string re-embeds rather than silently reusing another endpoint's
+vectors — a different endpoint can be a different vector space even under
+the "same" model name (a different quantization, for instance). The
+`api_key`, if any, and any credentials embedded in `base_url`, are never
+written into this identity string, a log line, or an exception message.
+
+A non-loopback `base_url` sends page and query text over the network to
+that host — the same privacy consideration as any other outbound request
+this server makes (see [Network requests](#network-requests)); it is your
+responsibility to point this at a server you trust.
+
+`server_info`'s `search` block reports `embedding_backend` ("fastembed" or
+"openai") and, for the remote backend, `embedding_endpoint` (host:port
+only) once the endpoint is configured and `embedding_model` resolves
+successfully. There is no startup validation yet that a remote server is
+actually *serving* bge-small rather than misconfigured to a different
+model or quantization silently returning a divergent cosine distribution
+— see the CHANGELOG note on this and issue #46 for the planned safety
+check.
 
 ### Docker deployment notes
 

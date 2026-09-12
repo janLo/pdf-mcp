@@ -13,6 +13,8 @@ model = "snowflake/snowflake-arctic-embed-s"
 
 Missing key → default `BAAI/bge-small-en-v1.5`. The model downloads once on first use. Switching models clears the embedding cache for that PDF; re-embedding happens automatically on the next search.
 
+All models on this page run through the local `fastembed`/onnxruntime path. For running the *default* `bge-small-en-v1.5` model against a remote OpenAI-compatible server instead (a compute-backend speed option, not a way to pick a different model), see "[Remote-served bge-small](configuration.md#remote-served-bge-small-embeddingbackend--openai)" in `docs/configuration.md`.
+
 ---
 
 ## Validated Models
@@ -66,7 +68,7 @@ If you need any of these (long contexts, multilingual, larger English models), p
 
 - **MTEB scores** for BGE v1.5 models from their [HuggingFace model cards](https://huggingface.co/BAAI/bge-small-en-v1.5).
 - **Snowflake Arctic Embed** scores from [snowflake-arctic-embed-m](https://huggingface.co/Snowflake/snowflake-arctic-embed-m) and [-l](https://huggingface.co/Snowflake/snowflake-arctic-embed-l) model cards.
-- All validated models run fully locally via fastembed — no external API calls.
+- All validated models run fully locally via fastembed by default — no external API calls, unless `[embedding].backend = "openai"` is set to point at a remote endpoint (see `docs/configuration.md`).
 
 ---
 

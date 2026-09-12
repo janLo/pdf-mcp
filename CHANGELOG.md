@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Remote-served bge-small embedding backend.** `[embedding].backend =
+  "openai"` points semantic search at any OpenAI-compatible
+  `/v1/embeddings` HTTP endpoint (ollama, lemonade, llama-server, vLLM,
+  OpenAI, ...) instead of the bundled fastembed/onnxruntime path. This is
+  scoped narrowly and deliberately to serving BAAI/bge-small-en-v1.5
+  remotely -- the same model fastembed uses by default -- since the
+  win being targeted is compute backend (e.g. a Vulkan iGPU path
+  onnxruntime can't reach on some hardware), not a different model. It is
+  not a general "bring your own embedding model" feature: `low_confidence`
+  and the hybrid RRF fusion score are tuned to bge-small's cosine
+  distribution, and a different model's distribution would silently throw
+  them off with no error, so arbitrary model choice is being handled
+  separately (see
+  [issue #46](https://github.com/jztan/pdf-mcp/issues/46)) alongside the
+  safety check that will guard against it. Configure with `base_url`
+  (required), `model` (required; informational/cache-naming only in this
+  version -- it does not change how text is encoded), `api_key_env`,
+  `timeout`, `batch_size`, and `max_concurrency`; `server_info` reports
+  `embedding_backend` and `embedding_endpoint` (host:port only, never a
+  credential) once the backend loads successfully. See
+  `docs/configuration.md` for the full key reference.
+
+  Note: this change does not yet include the startup cosine safety check
+  (embed fixed reference sentences and compare against stored fastembed
+  bge-small reference vectors, falling back to CPU with a warning below a
+  ~0.99 cosine threshold) that a remote server's own bge-small build should
+  be validated against before being trusted for scoring. That safety net,
+  and a benchmark of this backend against the bundled fastembed path, are
+  both tracked as follow-up work and are not included in this change.
+
 - **One-click install for Claude Desktop.** Every release now ships a
   `pdf-mcp-<version>.mcpb` bundle. Download it and drag it onto Claude
   Desktop's Settings > Extensions page; nothing needs to be installed

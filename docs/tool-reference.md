@@ -1011,7 +1011,9 @@ Reports which optional features are installed and which configuration values are
   - `extraction.ocr`: `{available, description}`. `available` is re-checked per call: `true` when Tesseract is on `PATH` or in its standard install folder (`%ProgramFiles%\Tesseract-OCR` on Windows, `/opt/homebrew/bin` or `/usr/local/bin` on macOS). OCR is opt-in (`pdf_read_pages(ocr=True)`); no tool runs it automatically, and the description says so.
   - `search.modes_available` (array) — always includes `"keyword"`; includes `"semantic"` and `"auto"` only when `fastembed` is installed and the configured embedding model is valid.
   - `search.default_mode` (string) — `"auto"`.
-  - `search.embedding_model` (string, conditional) — present **only** when semantic search is available; omitted otherwise.
+  - `search.embedding_model` (string, conditional) — present **only** when semantic search is available; omitted otherwise. For the remote (`openai`) backend this is the namespaced cache identity (`openai:<host>[:<port>]/<model>`), not the bare model name.
+  - `search.embedding_backend` (string, conditional) — `"fastembed"` or `"openai"`; present under the same condition as `embedding_model`. See `docs/configuration.md` for `[embedding].backend`.
+  - `search.embedding_endpoint` (string, conditional) — `host[:port]` of the remote endpoint; present only when `embedding_backend` is `"openai"`. Never includes credentials or userinfo.
   - `corpus.tools` (array) — the multi-document tools (`pdf_corpus_warm`, `pdf_corpus_overview`, `pdf_corpus_search`).
   - `corpus.max_files` (int) — corpus size cap (100).
   - `corpus.budget_seconds_range` (array) — clamp range for `budget_seconds` on the corpus tools (`[1, 300]`).
