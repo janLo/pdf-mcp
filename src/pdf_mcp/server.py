@@ -434,6 +434,26 @@ _RRF_K = 60
 # fastembed pipeline normalises) typically corresponds to "topically
 # unrelated" — useful for letting an agent decide whether to trust the
 # top-k results or report "no real match."
+#
+# TODO(issue #46, model-choice): this threshold (and _RRF_K's implicit
+# assumption that keyword and semantic ranks fuse comparably) is tuned to
+# bge-small-en-v1.5's own cosine-similarity distribution -- the only model
+# this codebase has ever scored against. Now that [embedding].backend =
+# "openai" accepts an arbitrary remote `model` (see RemoteSpec/
+# remote_embedding_spec below), a model with a different cosine
+# distribution (tighter, wider, differently centered -- e5/nomic/Qwen3
+# families are known to differ substantially from BGE's) will silently
+# produce wrong `low_confidence` flags and a miscalibrated RRF fusion,
+# with NO error raised anywhere: scores are just numbers, and nothing here
+# validates that they mean what this threshold assumes they mean. This is
+# exactly the failure mode flagged in
+# https://github.com/jztan/pdf-mcp/issues/42 and is the open problem
+# https://github.com/jztan/pdf-mcp/issues/46 exists to solve -- e.g. a
+# per-model calibration profile, or a startup calibration pass (embed a
+# fixed reference set and measure the resulting score distribution)
+# feeding a model-specific threshold/RRF weighting instead of this one
+# constant. NOT solved in this branch -- left here, deliberately visible,
+# for that follow-up work.
 _SEMANTIC_CONFIDENCE_THRESHOLD = 0.5
 
 
