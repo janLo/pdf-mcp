@@ -243,8 +243,21 @@ from .remote_embedder import _redact_base_url as _redact_base_url_startup  # noq
 
 _remote_setup_startup = _remote_check_startup.configure_remote_backend(pdf_config)
 if _remote_setup_startup.spec is not None:
-    assert _remote_setup_startup.check_result is not None  # spec implies a check ran
-    if _remote_setup_startup.active:
+    if _remote_setup_startup.check_result is None:
+        # The safety check itself was skipped (issue #46, model choice) --
+        # `verify_startup = false`, or a non-bge-small `model` with nothing
+        # bge-small-shaped to compare against -- see
+        # remote_embedding_check.configure_remote_backend's docstring.
+        # `active` is always True here: skipping the check means the spec
+        # was registered directly, never a fallback.
+        logger.info(
+            "Remote embedding backend registered without the startup "
+            "safety check (endpoint=%s, model=%r): verify_startup is "
+            "false, or the model is not bge-small-compatible.",
+            _redact_base_url_startup(_remote_setup_startup.spec.base_url),
+            _remote_setup_startup.spec.model,
+        )
+    elif _remote_setup_startup.active:
         logger.info(
             "Remote embedding backend passed the startup safety check "
             "against %s: %s",

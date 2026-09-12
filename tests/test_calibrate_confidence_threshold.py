@@ -166,14 +166,30 @@ class TestCollectPairs:
                 return None, {"error": "not found"}
             return str(pdf_path), None
 
+        seen_prefixes = []
+
         def fake_encode(texts, spec, *, prefix=""):
-            # deterministic: length-based single dimension, so cosine is
-            # trivially computable and stable.
-            return np.array([[float(len(t))] for t in texts], dtype=np.float32)
+            seen_prefixes.append(prefix)
+            # 2D and content-dependent (length, vowel count) rather than a
+            # single dimension -- a 1-D vector L2-normalizes to +/-1.0 and
+            # makes every cosine trivially 1.0 regardless of whether the
+            # comparison logic is even correct.
+            return np.array(
+                [
+                    [float(len(t)), float(sum(t.lower().count(v) for v in "aeiou"))]
+                    for t in texts
+                ],
+                dtype=np.float32,
+            )
 
         monkeypatch.setattr(cct, "remote_encode", fake_encode)
 
-        spec = cct.RemoteSpec(base_url="http://localhost:8000/v1", model="fake-model")
+        spec = cct.RemoteSpec(
+            base_url="http://localhost:8000/v1",
+            model="fake-model",
+            document_prefix="DOC: ",
+            query_prefix="Q: ",
+        )
         pairs = cct.collect_pairs(
             ground_truth, spec, resolve_pdf=fake_resolve, print_progress=False
         )
@@ -182,4 +198,19 @@ class TestCollectPairs:
         assert len(pairs) == 1
         cosine, is_relevant = pairs[0]
         assert is_relevant is True
-        assert -1.0 <= cosine <= 1.0 + 1e-6
+        # A real, computed cosine between "hello world"'s and "hello"'s
+        # (length, vowel-count) vectors -- not the degenerate +/-1.0 a
+        # 1-D vector would always produce regardless of correctness.
+        page_vec = np.array([11.0, 3.0])  # "hello world": len 11, 3 vowels
+        query_vec = np.array([5.0, 2.0])  # "hello": len 5, 2 vowels
+        expected = float(
+            page_vec
+            @ query_vec
+            / (np.linalg.norm(page_vec) * np.linalg.norm(query_vec))
+        )
+        assert cosine == pytest.approx(expected, abs=1e-5)
+
+        # document_prefix and query_prefix must each reach the right call
+        # (a swap here would silently corrupt every calibration run).
+        assert "DOC: " in seen_prefixes
+        assert "Q: " in seen_prefixes

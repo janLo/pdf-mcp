@@ -232,8 +232,18 @@ def main(argv: "list[str] | None" = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         if setup.spec is not None:
-            assert setup.check_result is not None  # spec implies a check ran
-            if setup.active:
+            if setup.check_result is None:
+                # The check itself was skipped (issue #46, model choice) --
+                # verify_startup = false, or a non-bge-small model -- see
+                # remote_embedding_check.configure_remote_backend's
+                # docstring. active is always True here.
+                print(
+                    "remote embedding backend registered without the "
+                    "startup safety check (verify_startup is false, or "
+                    "the model is not bge-small-compatible)",
+                    file=sys.stderr,
+                )
+            elif setup.active:
                 print(
                     "remote embedding backend passed the startup safety "
                     f"check: {setup.check_result.reason}",
