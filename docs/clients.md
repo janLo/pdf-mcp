@@ -1,11 +1,18 @@
 # MCP client setup
 
-Configuration for each MCP client pdf-mcp is known to work with. Install
-the server first:
+Configuration for each MCP client pdf-mcp is known to work with. Claude
+Desktop can install everything itself (see its one-click install below).
+Every other client runs the `pdf-mcp` command, so install it first (Python
+3.10 or later):
 
 ```bash
-pip install pdf-mcp
+uv tool install pdf-mcp     # or: pipx install pdf-mcp
 ```
+
+`pip install pdf-mcp` works inside a virtual environment; Homebrew's Python
+and recent Debian and Ubuntu refuse a system-wide pip install. If a client
+cannot find the `pdf-mcp` command, use `uvx` instead (see Other MCP Clients
+below), which needs nothing installed but uv.
 
 <details open>
 <summary><strong>Claude Code</strong></summary>
@@ -33,8 +40,8 @@ Or add to `~/.claude.json`:
 
 **One-click install (nothing to install first):**
 
-1. Download `pdf-mcp-<version>.mcpb` from the
-   [latest release](https://github.com/jztan/pdf-mcp/releases/latest).
+1. [Download pdf-mcp.mcpb](https://github.com/jztan/pdf-mcp/releases/latest/download/pdf-mcp.mcpb)
+   (always the newest release).
 2. In Claude Desktop open **Settings > Extensions** and drag the file onto
    that page (double-clicking the file also works on some computers). Click
    **Install**.
@@ -53,9 +60,10 @@ onnxruntime, is built for).
 
 Works in Claude Desktop's **Chat**. Cowork and Claude Code inside Claude
 Desktop start extensions differently and need Node.js installed on the
-computer; if you use those, install with pip below.
+computer; if you use those, install the `pdf-mcp` command as at the top of
+this page and configure it by hand below.
 
-**Updating:** download the newer `.mcpb` and drag it onto Settings >
+**Updating:** download `pdf-mcp.mcpb` again and drag it onto Settings >
 Extensions the same way; it replaces the installed version in place. With
 "Check for updates" left on, Claude tells you when a new version is out.
 
@@ -65,7 +73,8 @@ delete the folder `.cache\pdf-mcp` in your user folder
 Linux). It holds pdf-mcp's downloaded components and its PDF cache; Claude
 Desktop does not remove it.
 
-**Or configure it by hand** (needs `pip install pdf-mcp` first). Add to your
+**Or configure it by hand** (needs the `pdf-mcp` command installed first,
+see the top of this page). Add to your
 `claude_desktop_config.json`:
 
 ```json

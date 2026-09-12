@@ -40,44 +40,60 @@ Drop in any PDF, or a whole folder of them, and watch an agent triage the corpus
 
 ## Installation
 
-**No terminal?** Download `pdf-mcp-<version>.mcpb` from the
-[latest release](https://github.com/jztan/pdf-mcp/releases/latest) and drag
-it onto Claude Desktop's Settings > Extensions. Details under Claude Desktop
+### Claude Desktop: nothing to install first
+
+1. **[Download pdf-mcp.mcpb](https://github.com/jztan/pdf-mcp/releases/latest/download/pdf-mcp.mcpb)**.
+2. In Claude Desktop, open **Settings > Extensions**, drag the file onto
+   that page, and click **Install**.
+3. Ask Claude about a PDF by its location, for example "Use pdf-mcp to
+   summarize C:\Users\me\Downloads\report.pdf", or about a whole folder.
+
+The first start downloads pdf-mcp's components (about 250 MB) and can take a
+few minutes; later starts take seconds. OCR for scanned pages is included:
+the first scanned page downloads an English-only Tesseract (about 14 MB).
+Needs Windows 10 or later, or macOS 13 or later (14 on Apple Silicon), and
+works in Claude Desktop's Chat. Updating, uninstalling and other details are
 in [docs/clients.md](docs/clients.md).
 
-```bash
-pip install pdf-mcp
-```
+### Claude Code and other MCP clients
 
-That is the whole install: hybrid search, corpus tools, multi-column and
-CJK reading order all work out of the box.
-
-OCR on scanned PDFs additionally needs system Tesseract:
+Needs Python 3.10 or later. Install the `pdf-mcp` command with
+[uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/):
 
 ```bash
-brew install tesseract        # macOS
-apt install tesseract-ocr     # Ubuntu/Debian
-winget install -e --id UB-Mannheim.TesseractOCR  # Windows
+uv tool install pdf-mcp     # or: pipx install pdf-mcp
 ```
 
-GPU embedding is optional and off by default. On an NVIDIA card it makes the
-embedding pass one to two orders of magnitude faster; set `PDF_MCP_CUDA=1`
-after installing the CUDA build of onnxruntime. Setup per CUDA series is in
-[docs/configuration.md](docs/configuration.md#gpu-embedding-nvidia-cuda).
+`pip install pdf-mcp` works inside a virtual environment; Homebrew's Python
+and recent Debian and Ubuntu refuse a system-wide pip install.
 
-## Quick Start
+Then add it to your client. For Claude Code:
 
 ```bash
 claude mcp add pdf-mcp -- pdf-mcp
 ```
 
-Then ask Claude to read a PDF. For Claude Desktop, VS Code, Codex CLI,
-Kiro, or any other MCP client, see **[docs/clients.md](docs/clients.md)**.
+For VS Code, Cursor, Codex CLI, Kiro or any other MCP client, see
+**[docs/clients.md](docs/clients.md)**. Then ask your agent to read a PDF.
 
-pdf-mcp's tools are also plain Python functions, so you can import them
-and hand a PDF to the Anthropic SDK without running a server. Two
-runnable scripts, for a question and for a whole document:
-**[examples/](examples/)**.
+Search, the corpus tools, tables and multi-column and CJK reading order work
+out of the box. OCR on scanned pages also needs Tesseract:
+
+```bash
+brew install tesseract                             # macOS
+sudo apt install tesseract-ocr                     # Ubuntu/Debian
+winget install -e --id UB-Mannheim.TesseractOCR    # Windows
+```
+
+Optional: CUDA embedding on an NVIDIA card warms large folders one to two
+orders of magnitude faster; see
+[docs/configuration.md](docs/configuration.md#gpu-embedding-nvidia-cuda).
+
+### From Python
+
+pdf-mcp's tools are also plain Python functions, so you can import them and
+hand a PDF to the Anthropic SDK without running a server. Two runnable
+scripts, for a question and for a whole document: **[examples/](examples/)**.
 
 Why this exists, and what broke along the way: [Claude's 100-page PDF limit and how I got around it](https://blog.jztan.com/how-i-built-pdf-mcp-solving-claude-large-pdf-limitations/?utm_source=github&utm_medium=referral&utm_campaign=pdf-mcp&utm_content=quickstart-how-i-built-pdf-mcp-solving-claude-large-pdf-limitations)
 
