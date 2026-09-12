@@ -265,6 +265,29 @@ if _remote_setup_startup.spec is not None:
 
 del _remote_check_startup, _redact_base_url_startup, _remote_setup_startup
 
+# One-time startup warning (issue #46): a remote model this codebase has no
+# calibration for gets NO low_confidence signal, not a silently-wrong one --
+# see PDFConfig.confidence_threshold and the TODO on _RRF_K/
+# _SEMANTIC_CONFIDENCE_THRESHOLD's replacement above. Logged once here,
+# at process start, rather than per-request: this is a static property of
+# the resolved config, identical on every call for the life of the process.
+if pdf_config.embedding_backend == "openai" and pdf_config.confidence_threshold is None:
+    _remote_spec_for_warning = pdf_config.remote_embedding_spec
+    assert _remote_spec_for_warning is not None  # backend == "openai" guarantees this
+    logger.warning(
+        "[embedding].model=%r is not recognized as bge-small-compatible, and "
+        "[embedding].confidence_threshold is not set. pdf_search / "
+        "pdf_corpus_search will report low_confidence, "
+        "all_results_low_confidence, and confidence_threshold as null and "
+        "set confidence_unavailable=true, rather than reuse the 0.5 cutoff "
+        "tuned for BAAI/bge-small-en-v1.5's cosine distribution. Run "
+        "scripts/calibrate_confidence_threshold.py against this endpoint to "
+        "derive a real value, then set [embedding].confidence_threshold "
+        "explicitly. See docs/configuration.md.",
+        _remote_spec_for_warning.model,
+    )
+    del _remote_spec_for_warning
+
 # Update check: bundle installs only (the bundle sets PDF_MCP_UPDATE_CHECK),
 # and `[updates] check` in the config always wins. Claude Desktop does not
 # show server `instructions` to the model, so the notice rides on the first
@@ -435,26 +458,33 @@ _RRF_K = 60
 # unrelated" — useful for letting an agent decide whether to trust the
 # top-k results or report "no real match."
 #
-# TODO(issue #46, model-choice): this threshold (and _RRF_K's implicit
-# assumption that keyword and semantic ranks fuse comparably) is tuned to
-# bge-small-en-v1.5's own cosine-similarity distribution -- the only model
-# this codebase has ever scored against. Now that [embedding].backend =
-# "openai" accepts an arbitrary remote `model` (see RemoteSpec/
-# remote_embedding_spec below), a model with a different cosine
-# distribution (tighter, wider, differently centered -- e5/nomic/Qwen3
-# families are known to differ substantially from BGE's) will silently
-# produce wrong `low_confidence` flags and a miscalibrated RRF fusion,
-# with NO error raised anywhere: scores are just numbers, and nothing here
-# validates that they mean what this threshold assumes they mean. This is
-# exactly the failure mode flagged in
-# https://github.com/jztan/pdf-mcp/issues/42 and is the open problem
-# https://github.com/jztan/pdf-mcp/issues/46 exists to solve -- e.g. a
-# per-model calibration profile, or a startup calibration pass (embed a
-# fixed reference set and measure the resulting score distribution)
-# feeding a model-specific threshold/RRF weighting instead of this one
-# constant. NOT solved in this branch -- left here, deliberately visible,
-# for that follow-up work.
-_SEMANTIC_CONFIDENCE_THRESHOLD = 0.5
+# issue #46, model-choice: this threshold is tuned to bge-small-en-v1.5's
+# own cosine-similarity distribution, and [embedding].backend = "openai"
+# now accepts an arbitrary remote `model` whose distribution may differ
+# substantially (e5/nomic/Qwen3-Embedding families are known examples).
+# Resolved: the threshold is no longer this fixed module constant. It is
+# now `pdf_config.confidence_threshold` (config.py), which:
+#   - uses this same 0.5 default when the configured model is
+#     bge-small-compatible (embedder.is_bge_small_compatible) -- every
+#     existing install is unaffected;
+#   - returns None ("we do not know a meaningful cutoff for this model's
+#     distribution") for any other model, unless the user has explicitly
+#     set `[embedding].confidence_threshold` -- see
+#     `scripts/calibrate_confidence_threshold.py` for how to derive a real
+#     value for a specific remote model instead of guessing one.
+# A None threshold makes every call site below report `low_confidence` /
+# `all_results_low_confidence` as null and `confidence_unavailable=True`
+# (see `_confidence_response_fields`) instead of silently reusing bge-small's
+# tuning for an incompatible model -- the failure mode
+# https://github.com/jztan/pdf-mcp/issues/42 originally flagged.
+#
+# _RRF_K, checked as part of this fix: `_rrf_fuse` below fuses purely by
+# RANK (`enumerate(..., start=1)`), never by the raw cosine/BM25 score
+# magnitude, so a different embedding model reordering which pages rank
+# 1st/2nd/3rd changes the fusion's INPUT but not its arithmetic. _RRF_K is
+# NOT sensitive to which embedding model produced the semantic ranking;
+# the earlier version of this comment claiming otherwise was wrong and
+# has been corrected.
 
 
 def _rrf_fuse(
@@ -487,6 +517,67 @@ def _rrf_fuse(
 
     ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
     return ranked[:max_results]
+
+
+def _match_low_confidence(score: float, threshold: float | None) -> bool | None:
+    """`score < threshold`, tri-state.
+
+    `threshold` is None exactly when `pdf_config.confidence_threshold`
+    could not resolve a calibrated cutoff for the configured model (a
+    non-bge-small-compatible remote model with no explicit
+    `[embedding].confidence_threshold` -- see config.py). In that case
+    this returns None ("unknown"), not False: a non-bge-small model's raw
+    cosine could mean anything, so reporting False would silently claim
+    confidence the code has no basis for.
+    """
+    if threshold is None:
+        return None
+    return score < threshold
+
+
+def _all_low_confidence(matches: list[dict[str, Any]]) -> bool | None:
+    """Tri-state reduction of `low_confidence` across `matches`.
+
+    - No matches: False (nothing to be unconfident about).
+    - Any match's `low_confidence` is None (threshold unknown): None --
+      propagates "unknown" rather than reporting False, which would read
+      as "results are confident."
+    - Otherwise: True iff every match is low_confidence, same as before
+      this became tri-state.
+    """
+    if not matches:
+        return False
+    flags = [m["low_confidence"] for m in matches]
+    if any(f is None for f in flags):
+        return None
+    return all(flags)
+
+
+def _confidence_response_fields(
+    threshold: float | None, model_name: str
+) -> dict[str, Any]:
+    """`confidence_threshold` (+ `confidence_unavailable`/`_reason` when
+    `threshold` is None) for a semantic/hybrid pdf_search or
+    pdf_corpus_search response.
+
+    Mirrors the `semantic_unavailable`/`semantic_unavailable_reason` pair
+    already used elsewhere in this module for "a derived signal could not
+    be computed" -- same shape, same idea, applied to confidence instead
+    of to search mode.
+    """
+    fields: dict[str, Any] = {"confidence_threshold": threshold}
+    if threshold is None:
+        fields["confidence_unavailable"] = True
+        fields["confidence_unavailable_reason"] = (
+            f"model {model_name!r} is not recognized as bge-small-"
+            "compatible and [embedding].confidence_threshold is not set, "
+            "so low_confidence cannot be computed for it. Run "
+            "scripts/calibrate_confidence_threshold.py against this "
+            "endpoint and set [embedding].confidence_threshold to its "
+            "suggested value, or use a bge-small model. See "
+            "docs/configuration.md."
+        )
+    return fields
 
 
 def _pdf_hash(path: str) -> str:
@@ -2879,7 +2970,15 @@ def pdf_search(
               literal-term hits stay confident regardless of cosine).
               Response-level `all_results_low_confidence` +
               `confidence_threshold` are present in both semantic and
-              hybrid modes.
+              hybrid modes. All three are **null**, and the response
+              also carries `confidence_unavailable=true` +
+              `confidence_unavailable_reason`, when the configured
+              embedding model has no calibrated confidence threshold
+              (a non-bge-small-compatible remote model with
+              `[embedding].confidence_threshold` unset — see
+              docs/configuration.md and
+              scripts/calibrate_confidence_threshold.py). Treat null
+              here as "unknown," not "confident."
             - total_matches, page_match_counts, search_mode, searched_pages
             - text_coverage ('full' | 'partial' | 'none') — how much of the
               document has extractable text. Page mode only. If this is
@@ -3106,6 +3205,7 @@ def pdf_search(
                     "query": query,
                 }
             page_nums_list = sorted(cached_embeddings.keys())
+            confidence_threshold = pdf_config.confidence_threshold
             # Page score is its best chunk. Averaging would re-introduce the
             # page-level dilution this change exists to remove.
             sem_scores: Any = np.array(
@@ -3143,7 +3243,9 @@ def pdf_search(
                             ),
                         ),
                         "score": score,
-                        "low_confidence": score < _SEMANTIC_CONFIDENCE_THRESHOLD,
+                        "low_confidence": _match_low_confidence(
+                            score, confidence_threshold
+                        ),
                         "position": 0,
                     }
                 )
@@ -3168,9 +3270,6 @@ def pdf_search(
 
             hidden_detected = _attach_hidden(matches)
             sem_page_counts = {str(m["page"]): 1 for m in matches}
-            all_results_low_confidence = bool(matches) and all(
-                m["low_confidence"] for m in matches
-            )
 
             sem_response: dict[str, Any] = {
                 "content_warning": (
@@ -3182,8 +3281,8 @@ def pdf_search(
                 "total_matches": len(matches),
                 "text_coverage": _searched_text_coverage(local_path, doc_pages),
                 "page_match_counts": sem_page_counts,
-                "all_results_low_confidence": all_results_low_confidence,
-                "confidence_threshold": _SEMANTIC_CONFIDENCE_THRESHOLD,
+                "all_results_low_confidence": _all_low_confidence(matches),
+                **_confidence_response_fields(confidence_threshold, _model_name),
                 "searched_pages": doc_pages,
                 "search_mode": "semantic",
                 "model": _model_name,
@@ -3427,6 +3526,7 @@ def pdf_search(
 
         fused = _rrf_fuse(keyword_pages_0idx, semantic_pages_0idx, max_results)
 
+        confidence_threshold = pdf_config.confidence_threshold
         hybrid_matches: list[dict[str, Any]] = []
         for page_num, rrf_score in fused:
             if page_num in keyword_excerpts:
@@ -3454,10 +3554,13 @@ def pdf_search(
             # hit on the page AND (b) the underlying semantic cosine is
             # below the confidence threshold. Keyword-hit pages always
             # count as confident: the query terms literally appear.
+            # (b) is unknown, not False, when confidence_threshold is None
+            # -- see _match_low_confidence.
             sem_score = page_sem_score.get(page_num, 0.0)
-            low_confidence = (
-                page_num not in keyword_pages_set
-                and sem_score < _SEMANTIC_CONFIDENCE_THRESHOLD
+            low_confidence: bool | None = (
+                False
+                if page_num in keyword_pages_set
+                else _match_low_confidence(sem_score, confidence_threshold)
             )
             hybrid_matches.append(
                 {
@@ -3499,9 +3602,6 @@ def pdf_search(
 
         hidden_detected = _attach_hidden(hybrid_matches)
         hybrid_page_counts = {str(m["page"]): 1 for m in hybrid_matches}
-        all_results_low_confidence = bool(hybrid_matches) and all(
-            m["low_confidence"] for m in hybrid_matches
-        )
 
         hybrid_response: dict[str, Any] = {
             "content_warning": (
@@ -3513,8 +3613,8 @@ def pdf_search(
             "total_matches": len(hybrid_matches),
             "text_coverage": _searched_text_coverage(local_path, doc_pages),
             "page_match_counts": hybrid_page_counts,
-            "all_results_low_confidence": all_results_low_confidence,
-            "confidence_threshold": _SEMANTIC_CONFIDENCE_THRESHOLD,
+            "all_results_low_confidence": _all_low_confidence(hybrid_matches),
+            **_confidence_response_fields(confidence_threshold, _model_name),
             "searched_pages": doc_pages,
             "search_mode": "hybrid",
             "model": _model_name,
@@ -4419,7 +4519,10 @@ def pdf_corpus_search(
         - doc_score: (hybrid matches only) head-vector cosine of the
           match's document, 4 dp, null when the doc has no profile
         - all_results_low_confidence, confidence_threshold: semantic
-          and hybrid modes
+          and hybrid modes. Both null (plus confidence_unavailable=true
+          and confidence_unavailable_reason) when the configured model
+          has no calibrated confidence threshold — see
+          scripts/calibrate_confidence_threshold.py.
         - model_name: semantic mode only
         - semantic_unavailable, semantic_unavailable_reason: auto mode
           only, present when embeddings are unavailable and the search
@@ -4563,6 +4666,7 @@ def pdf_corpus_search(
             doc_match_counts[path] = doc_match_counts.get(path, 0) + 1
         score_map = {(path, page): s for path, page, s in top}
         fused = [(path, page) for path, page, _s in top]
+        confidence_threshold = pdf_config.confidence_threshold
 
         def _sem_build(path: str, page: int, idx: int) -> dict[str, Any]:
             score = round(score_map[(path, page)], 4)
@@ -4581,7 +4685,7 @@ def pdf_corpus_search(
                     lambda: best_chunks.get((path, page)),
                 ),
                 "score": score,
-                "low_confidence": score < _SEMANTIC_CONFIDENCE_THRESHOLD,
+                "low_confidence": _match_low_confidence(score, confidence_threshold),
                 "position": 0,
                 "_fused_pos": idx,
             }
@@ -4595,9 +4699,6 @@ def pdf_corpus_search(
             best_chunks=best_chunks,
         )
         hidden_text_detected = any(m.get("hidden_text") for m in matches)
-        all_results_low_confidence = bool(matches) and all(
-            m["low_confidence"] for m in matches
-        )
 
         return {
             "matches": matches,
@@ -4608,8 +4709,8 @@ def pdf_corpus_search(
             "coverage": {"searched": len(ready_paths), "corpus": len(res["files"])},
             "low_text_coverage": low_text_coverage,
             "hidden_text_detected": hidden_text_detected,
-            "all_results_low_confidence": all_results_low_confidence,
-            "confidence_threshold": _SEMANTIC_CONFIDENCE_THRESHOLD,
+            "all_results_low_confidence": _all_low_confidence(matches),
+            **_confidence_response_fields(confidence_threshold, embed_model),
             "model_name": embed_model,
             "unprocessed": warm["unprocessed"],
             "semantic_unprocessed": semantic_unprocessed,
@@ -4776,6 +4877,7 @@ def pdf_corpus_search(
     fused = [item for item, _s in fused_scored]
     rrf_score_map = dict(fused_scored)
     keyword_pages_set = set(kw_payload.keys())
+    confidence_threshold = pdf_config.confidence_threshold
 
     def _hybrid_build(path: str, page: int, idx: int) -> dict[str, Any]:
         if (path, page) in kw_payload:
@@ -4796,10 +4898,13 @@ def pdf_corpus_search(
         # hit on the page AND (b) the underlying semantic cosine is
         # below the confidence threshold. Keyword-hit pages always
         # count as confident: the query terms literally appear.
-        low_confidence = (
-            path,
-            page,
-        ) not in keyword_pages_set and sem_score < _SEMANTIC_CONFIDENCE_THRESHOLD
+        # (b) is unknown, not False, when confidence_threshold is None
+        # -- see _match_low_confidence.
+        low_confidence: bool | None = (
+            False
+            if (path, page) in keyword_pages_set
+            else _match_low_confidence(sem_score, confidence_threshold)
+        )
         return {
             "path": path,
             "doc_title": _title_for(path),
@@ -4824,9 +4929,6 @@ def pdf_corpus_search(
         attach_geometry=routing is not None,
     )
     hidden_text_detected = any(m.get("hidden_text") for m in matches)
-    all_results_low_confidence = bool(matches) and all(
-        m["low_confidence"] for m in matches
-    )
 
     merged_doc_match_counts = _merge_doc_match_counts(
         kw_doc_match_counts, sem_ranking, doc_list
@@ -4854,8 +4956,8 @@ def pdf_corpus_search(
         "coverage": {"searched": len(ready_paths), "corpus": len(res["files"])},
         "low_text_coverage": low_text_coverage,
         "hidden_text_detected": hidden_text_detected,
-        "all_results_low_confidence": all_results_low_confidence,
-        "confidence_threshold": _SEMANTIC_CONFIDENCE_THRESHOLD,
+        "all_results_low_confidence": _all_low_confidence(matches),
+        **_confidence_response_fields(confidence_threshold, embed_model),
         "unprocessed": warm["unprocessed"],
         "semantic_unprocessed": semantic_unprocessed,
         "skipped": skipped,

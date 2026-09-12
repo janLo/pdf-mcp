@@ -727,6 +727,86 @@ class TestPdfSearchModes:
         assert result["hidden_text_detected"] is False
 
 
+class TestConfidenceUnavailableForNonBgeSmallModel:
+    """A configured model this codebase has no calibration for (issue #46)
+    must not silently reuse bge-small's 0.5 cutoff: low_confidence /
+    all_results_low_confidence / confidence_threshold come back null, with
+    confidence_unavailable=True and a reason string."""
+
+    def _make_encode(self, dim: int = 384):
+        def encode(texts, model_name=None):
+            result = np.zeros((len(texts), dim), dtype=np.float32)
+            for i in range(len(texts)):
+                result[i, i % dim] = 1.0
+            return result
+
+        def encode_query(text, model_name=None):
+            v = np.zeros(dim, dtype=np.float32)
+            v[0] = 1.0
+            return v
+
+        return encode, encode_query
+
+    def _use_non_bge_remote_model(self, monkeypatch):
+        """Point server.pdf_config at an 'openai' backend whose `model`
+        does not mention bge-small, with no explicit confidence_threshold
+        set -- PDFConfig.confidence_threshold then resolves to None."""
+        monkeypatch.setattr(
+            server.pdf_config,
+            "_data",
+            {
+                **server.pdf_config._data,
+                "embedding": {
+                    "backend": "openai",
+                    "base_url": "http://localhost:8000/v1",
+                    "model": "nomic-embed-text",
+                },
+            },
+        )
+
+    def test_semantic_mode(self, sample_pdf, isolated_server, monkeypatch):
+        self._use_non_bge_remote_model(monkeypatch)
+        encode, encode_query = self._make_encode()
+        with (
+            patch("pdf_mcp.embedder.check_available"),
+            patch("pdf_mcp.embedder.encode", encode),
+            patch("pdf_mcp.embedder.encode_query", encode_query),
+        ):
+            result = pdf_search(sample_pdf, "unrelated", mode="semantic")
+
+        assert result["confidence_threshold"] is None
+        assert result["confidence_unavailable"] is True
+        assert "confidence_unavailable_reason" in result
+        assert result["all_results_low_confidence"] is None
+        assert result["matches"], "expected at least one match to check"
+        for m in result["matches"]:
+            assert m["low_confidence"] is None
+
+    def test_hybrid_mode(self, sample_pdf, isolated_server, monkeypatch):
+        self._use_non_bge_remote_model(monkeypatch)
+        encode, encode_query = self._make_encode()
+        with (
+            patch("pdf_mcp.embedder.check_available"),
+            patch("pdf_mcp.embedder.encode", encode),
+            patch("pdf_mcp.embedder.encode_query", encode_query),
+        ):
+            kw_result = pdf_search(sample_pdf, "page", mode="auto")
+            none_result = pdf_search(sample_pdf, "unrelated", mode="auto")
+
+        assert none_result["confidence_threshold"] is None
+        assert none_result["confidence_unavailable"] is True
+        assert none_result["all_results_low_confidence"] is None
+        # With the threshold unknown, low_confidence can only be False
+        # (page had a literal keyword hit) or None (unknown) -- never a
+        # silently-asserted True.
+        for m in kw_result["matches"]:
+            assert m["low_confidence"] in (False, None)
+        # "unrelated" has no keyword hits at all, so every match's
+        # low_confidence is unknown.
+        for m in none_result["matches"]:
+            assert m["low_confidence"] is None
+
+
 class TestPdfInfo:
     """Tests for pdf_info tool."""
 
@@ -4910,6 +4990,82 @@ class TestPdfCorpusSearchSemanticAuto:
         monkeypatch.setattr(server, "_corpus_doc_scores", no_doc_arm)
         unfavored = pdf_corpus_search(str(corpus_dir), "budget", mode="auto", top_k=10)
         assert unfavored["matches"][0]["path"] != charlie
+
+
+class TestPdfCorpusSearchConfidenceUnavailable:
+    """pdf_corpus_search mirrors pdf_search: a non-bge-small-compatible
+    model with no explicit confidence_threshold reports the confidence
+    fields as null/unavailable rather than reusing bge-small's 0.5
+    cutoff (issue #46)."""
+
+    def _use_non_bge_remote_model(self, monkeypatch):
+        monkeypatch.setattr(
+            server.pdf_config,
+            "_data",
+            {
+                **server.pdf_config._data,
+                "embedding": {
+                    "backend": "openai",
+                    "base_url": "http://localhost:8000/v1",
+                    "model": "nomic-embed-text",
+                },
+            },
+        )
+
+    @staticmethod
+    def _fake_embedder(monkeypatch):
+        import pdf_mcp.embedder as emb
+
+        def fake_check(model):
+            return None
+
+        def fake_encode(texts, model):
+            out = []
+            for t in texts:
+                v = np.zeros(4, dtype=np.float32)
+                v[0] = 1.0 + t.lower().count("budget")
+                v[1] = 1.0
+                out.append(v / np.linalg.norm(v))
+            return out
+
+        def fake_encode_query(text, model):
+            v = np.array([1.0, 0.1, 0.0, 0.0], dtype=np.float32)
+            return v / np.linalg.norm(v)
+
+        monkeypatch.setattr(emb, "check_available", fake_check)
+        monkeypatch.setattr(emb, "encode", fake_encode)
+        monkeypatch.setattr(emb, "encode_query", fake_encode_query)
+
+    def test_semantic_mode(self, corpus_dir, isolated_server, monkeypatch):
+        self._use_non_bge_remote_model(monkeypatch)
+        self._fake_embedder(monkeypatch)
+        result = pdf_corpus_search(str(corpus_dir), "budget", mode="semantic")
+        assert "error" not in result
+        assert result["confidence_threshold"] is None
+        assert result["confidence_unavailable"] is True
+        assert "confidence_unavailable_reason" in result
+        assert result["all_results_low_confidence"] is None
+        assert result["matches"], "expected at least one match to check"
+        for m in result["matches"]:
+            assert m["low_confidence"] is None
+
+    def test_hybrid_mode(self, corpus_dir, isolated_server, monkeypatch):
+        self._use_non_bge_remote_model(monkeypatch)
+        self._fake_embedder(monkeypatch)
+        result = pdf_corpus_search(str(corpus_dir), "budget", mode="auto")
+        assert result["search_mode"] == "hybrid"
+        assert result["confidence_threshold"] is None
+        assert result["confidence_unavailable"] is True
+        # Threshold unknown -> low_confidence is never a silent True.
+        for m in result["matches"]:
+            assert m["low_confidence"] in (False, None)
+        # all_results_low_confidence is None iff at least one match's
+        # low_confidence is itself unknown (None) -- not automatic just
+        # because the threshold is unknown, since keyword-hit pages stay
+        # confidently False regardless.
+        flags = [m["low_confidence"] for m in result["matches"]]
+        expected = None if any(f is None for f in flags) else all(flags)
+        assert result["all_results_low_confidence"] == expected
 
 
 class TestPdfCorpusSearchSourceLabel:
