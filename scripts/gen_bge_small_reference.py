@@ -31,14 +31,21 @@ from pdf_mcp import embedder  # noqa: E402
 # or quantization drift that only shows up on some sentence shapes is more
 # likely to surface than if all eight sentences were near-duplicates.
 SENTENCES = [
-    "The quarterly report highlights a steady increase in cloud infrastructure spending.",
-    "Photosynthesis converts sunlight, water, and carbon dioxide into glucose and oxygen.",
-    "The committee voted to postpone the zoning decision until next month's session.",
-    "A zero-trust architecture assumes no implicit trust between network segments.",
-    "Artemis missions aim to return astronauts to the lunar surface by the end of the decade.",
-    "Consumers reported rising concern over hidden fees in short-term lending products.",
-    "The router firmware update patches a critical remote code execution vulnerability.",
-    "Agricultural subsidies are intended to stabilize farm income during volatile harvests.",
+    "The quarterly report highlights a steady increase in cloud"
+    " infrastructure spending.",
+    "Photosynthesis converts sunlight, water, and carbon dioxide into"
+    " glucose and oxygen.",
+    "The committee voted to postpone the zoning decision until next"
+    " month's session.",
+    "A zero-trust architecture assumes no implicit trust between network" " segments.",
+    "Artemis missions aim to return astronauts to the lunar surface by the"
+    " end of the decade.",
+    "Consumers reported rising concern over hidden fees in short-term"
+    " lending products.",
+    "The router firmware update patches a critical remote code execution"
+    " vulnerability.",
+    "Agricultural subsidies are intended to stabilize farm income during"
+    " volatile harvests.",
 ]
 
 OUTPUT_PATH = REPO / "src" / "pdf_mcp" / "bge_small_reference.json"
@@ -55,7 +62,8 @@ def main() -> int:
         json.dump(data, f, indent=2)
         f.write("\n")
     print(
-        f"wrote {len(SENTENCES)} reference vectors (dim={len(vecs[0])}) to {OUTPUT_PATH}"
+        f"wrote {len(SENTENCES)} reference vectors (dim={len(vecs[0])})"
+        f" to {OUTPUT_PATH}"
     )
     return 0
 
