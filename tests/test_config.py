@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from pdf_mcp.config import PDFConfig
+from pdf_mcp.embedder import DEFAULT_MODEL
 
 
 class TestConfigLoad:
@@ -430,3 +431,53 @@ class TestEmbeddingBackend:
             'model = "bge-small-en-v1.5"\n',
         )
         assert config.embedding_model == "openai:localhost:8000/bge-small-en-v1.5"
+
+
+class TestDisableRemoteEmbeddingBackend:
+    """The startup safety-check fallback (issue #42) -- exercised directly
+    here since server.py only calls it at import time, where a broken
+    fallback would ship green (no other test covers this path)."""
+
+    def _openai_config(self, tmp_path) -> PDFConfig:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+            encoding="utf-8",
+        )
+        return PDFConfig(config_path=cfg)
+
+    def test_forces_fastembed_backend_and_default_model(self, tmp_path):
+        config = self._openai_config(tmp_path)
+        assert config.embedding_backend == "openai"
+
+        config.disable_remote_embedding_backend()
+
+        assert config.embedding_backend == "fastembed"
+        assert config.embedding_model == DEFAULT_MODEL
+        assert config.remote_embedding_spec is None
+
+    def test_is_idempotent(self, tmp_path):
+        config = self._openai_config(tmp_path)
+        config.disable_remote_embedding_backend()
+        config.disable_remote_embedding_backend()
+        assert config.embedding_backend == "fastembed"
+
+    def test_does_not_affect_a_fresh_config_instance(self, tmp_path):
+        """Disabling one PDFConfig instance must not be global state that
+        leaks into a different instance (e.g. a second PDFConfig() built
+        for a test or a different process)."""
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+            encoding="utf-8",
+        )
+        disabled = PDFConfig(config_path=cfg_path)
+        disabled.disable_remote_embedding_backend()
+
+        fresh = PDFConfig(config_path=cfg_path)
+        assert fresh.embedding_backend == "openai"
+        assert fresh.remote_embedding_spec is not None

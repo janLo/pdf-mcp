@@ -9,6 +9,8 @@ directly against the real, committed `bge_small_reference.json`.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -129,6 +131,54 @@ class TestVerifyRemoteBackendFallback:
         assert not result.ok
         assert "connection refused" in result.reason
         assert result.mean_cosine is None
+
+    def test_corrupt_reference_file_fails_without_raising(self, tmp_path):
+        bad_path = tmp_path / "bad_reference.json"
+        bad_path.write_text("not json", encoding="utf-8")
+
+        def fake_encode(texts, spec):
+            raise AssertionError("must not be reached: load_reference failed first")
+
+        result = verify_remote_backend(
+            _spec(), encode_fn=fake_encode, reference_path=bad_path
+        )
+        assert not result.ok
+        assert "could not embed reference sentences" in result.reason
+
+    def test_empty_reference_file_fails_without_raising(self, tmp_path):
+        empty_path = tmp_path / "empty_reference.json"
+        empty_path.write_text(
+            json.dumps({"sentences": [], "vectors": []}), encoding="utf-8"
+        )
+
+        def fake_encode(texts, spec):
+            raise AssertionError("must not be reached: empty reference rejected first")
+
+        result = verify_remote_backend(
+            _spec(), encode_fn=fake_encode, reference_path=empty_path
+        )
+        assert not result.ok
+
+    def test_check_uses_a_short_single_batch_spec_not_the_caller_s(self):
+        """The startup check must not inherit the caller's bulk timeout/
+        batch_size/max_concurrency (see module docstring) -- it should call
+        encode_fn with its own short-timeout, single-batch, no-concurrency
+        spec regardless of what was passed in."""
+        seen_specs = []
+
+        def fake_encode(texts, spec):
+            seen_specs.append(spec)
+            return load_reference()[1]
+
+        caller_spec = _spec(timeout=60.0, batch_size=32, max_concurrency=4)
+        verify_remote_backend(caller_spec, encode_fn=fake_encode)
+
+        assert len(seen_specs) == 1
+        used = seen_specs[0]
+        assert used.timeout < caller_spec.timeout
+        assert used.max_concurrency == 1
+        assert used.base_url == caller_spec.base_url  # everything else preserved
+        assert used.model == caller_spec.model
 
     def test_custom_threshold_is_honored(self):
         sentences, vectors = load_reference()

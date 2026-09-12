@@ -221,13 +221,14 @@ if _remote_spec_startup is not None and pdf_config.remote_embedding_verify_start
     # start and serve correct (if slower) vectors, never crash and never
     # silently serve vectors from the wrong space.
     from . import remote_embedding_check as _remote_check_startup
+    from .remote_embedder import _redact_base_url as _redact_base_url_startup
 
     _check_result = _remote_check_startup.verify_remote_backend(_remote_spec_startup)
     if not _check_result.ok:
         logger.warning(
             "Remote embedding backend failed the startup safety check "
             "against %s: %s. Falling back to local fastembed (%s).",
-            _remote_spec_startup.base_url,
+            _redact_base_url_startup(_remote_spec_startup.base_url),
             _check_result.reason,
             _embedder_startup.DEFAULT_MODEL,
         )
@@ -242,10 +243,10 @@ if _remote_spec_startup is not None and pdf_config.remote_embedding_verify_start
         logger.info(
             "Remote embedding backend passed the startup safety check "
             "against %s: %s",
-            _remote_spec_startup.base_url,
+            _redact_base_url_startup(_remote_spec_startup.base_url),
             _check_result.reason,
         )
-    del _remote_check_startup, _check_result
+    del _remote_check_startup, _check_result, _redact_base_url_startup
 
 _embedder_startup.configure_remote(_remote_spec_startup)
 del _embedder_startup, _remote_spec_startup

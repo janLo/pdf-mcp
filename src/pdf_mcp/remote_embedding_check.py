@@ -20,10 +20,15 @@ reference vectors, and fall back to CPU with a warning if cosine drops below
 ~0.99."
 
 Aggregate rule: the MINIMUM per-sentence cosine must clear the threshold, not
-just the mean -- a single sentence with a low cosine (e.g. one long input
-truncated differently by a mismatched context window) is exactly the kind of
-localized failure a mean could hide. Threshold default 0.99, matching the
-issue's own number.
+just the mean -- a wrong-model/wrong-quantization endpoint could still land
+close to fastembed's vectors on some sentences by chance while diverging
+sharply on others, and a mean over 8 short reference sentences could hide
+that in the average. The reference sentences are short (well within any
+model's context window) specifically so this check isolates model/
+quantization/pooling mismatches; it is NOT a context-window check --
+`benchmark_data/bge_small_cosine_parity_results.md` covers real long-chunk
+behavior separately. Threshold default 0.99, matching the issue's own
+number.
 
 Called once at server startup (server.py) right before
 ``embedder.configure_remote``. Never raises for a reachability/format
@@ -35,7 +40,7 @@ with a human-readable reason instead, and the caller decides to fall back.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -46,6 +51,13 @@ REFERENCE_PATH = Path(__file__).with_name("bge_small_reference.json")
 # jztan's number (issue #42): "fall back to CPU with a warning if cosine
 # drops below ~0.99".
 DEFAULT_THRESHOLD = 0.99
+
+# The check embeds 8 short sentences, once, at startup -- it should fail
+# fast on an unreachable endpoint rather than inherit the bulk-embedding
+# retry budget (MAX_ATTEMPTS=3 x spec.timeout, which defaults to 60s and
+# could block server startup for minutes). 5s per attempt is generous for
+# 8 short sentences against a server that's actually up.
+_CHECK_TIMEOUT_SECONDS = 5.0
 
 # The type of remote_embedder.encode: (texts, spec) -> ndarray (N, D),
 # UNNORMALIZED. Exposed here so tests can inject a fake without touching
@@ -95,9 +107,18 @@ def verify_remote_backend(
 
     `encode_fn` defaults to `remote_embedder.encode`; tests inject a fake
     that returns pre-baked vectors so no HTTP call is made. Any exception
-    from `encode_fn` (network error, bad JSON, dimension mismatch, ...) is
-    caught and reported as `ok=False` with the exception text as `reason`
-    -- see the module docstring for why this never raises.
+    raised while loading the reference data or embedding it (network error,
+    bad JSON, dimension mismatch, a corrupt/missing reference file, an
+    empty reference set, ...) is caught and reported as `ok=False` with the
+    exception text as `reason` -- see the module docstring for why this
+    never raises; a startup check must never be able to crash the server.
+
+    Runs against a short-timeout, single-batch, no-concurrency copy of
+    `spec` (see `_CHECK_TIMEOUT_SECONDS`) regardless of the caller's own
+    `spec.timeout`/`batch_size`/`max_concurrency` -- this is 8 short
+    sentences, not a bulk warm, and should fail fast on an unreachable
+    endpoint rather than inherit `remote_embedder`'s multi-attempt retry
+    budget (which could otherwise block server startup for minutes).
     """
     import numpy as np
 
@@ -106,10 +127,17 @@ def verify_remote_backend(
 
         encode_fn = remote_embedder.encode
 
-    sentences, reference_vecs = load_reference(reference_path)
-
     try:
-        remote_vecs = encode_fn(sentences, spec)
+        sentences, reference_vecs = load_reference(reference_path)
+        if not sentences or reference_vecs.size == 0:
+            raise ValueError("reference file has no sentences/vectors")
+        check_spec = replace(
+            spec,
+            timeout=_CHECK_TIMEOUT_SECONDS,
+            batch_size=len(sentences),
+            max_concurrency=1,
+        )
+        remote_vecs = encode_fn(sentences, check_spec)
     except Exception as exc:  # noqa: BLE001 - reported, never propagated
         return SafetyCheckResult(
             ok=False,
