@@ -473,23 +473,67 @@ class TestEmbeddingBackend:
         with pytest.raises(ValueError, match="MISSING_EMBED_KEY"):
             config.remote_embedding_spec
 
-    @pytest.mark.parametrize(
-        "bad_key",
-        [
-            "dimensions = 384",
-            'document_prefix = "passage: "',
-            'query_prefix = "query: "',
-        ],
-    )
-    def test_openai_backend_rejects_model_choice_keys(self, tmp_path, bad_key):
+    def test_openai_backend_defaults_prefixes_and_dimensions(self, tmp_path):
         config = self._write(
             tmp_path,
             '[embedding]\nbackend = "openai"\n'
             'base_url = "http://localhost:8000/v1"\n'
-            'model = "bge-small-en-v1.5"\n' + bad_key + "\n",
+            'model = "nomic-embed-text"\n',
         )
-        with pytest.raises(ValueError, match="not supported"):
+        spec = config.remote_embedding_spec
+        assert spec is not None
+        assert spec.document_prefix == ""
+        assert spec.query_prefix == ""
+        assert spec.dimensions is None
+
+    def test_openai_backend_parses_prefixes_and_dimensions(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n'
+            'document_prefix = "search_document: "\n'
+            'query_prefix = "search_query: "\n'
+            "dimensions = 768\n",
+        )
+        spec = config.remote_embedding_spec
+        assert spec is not None
+        assert spec.document_prefix == "search_document: "
+        assert spec.query_prefix == "search_query: "
+        assert spec.dimensions == 768
+
+    def test_openai_backend_rejects_bad_dimensions(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n'
+            "dimensions = 0\n",
+        )
+        with pytest.raises(ValueError, match="dimensions"):
             config.remote_embedding_spec
+
+    def test_openai_backend_rejects_non_string_prefix(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n'
+            "document_prefix = 5\n",
+        )
+        with pytest.raises(ValueError, match="document_prefix"):
+            config.remote_embedding_spec
+
+    def test_embedding_model_identity_includes_prefix_hash(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "nomic-embed-text"\n'
+            'document_prefix = "search_document: "\n',
+        )
+        identity = config.embedding_model
+        assert identity.startswith("openai:localhost:8000/nomic-embed-text@")
 
     def test_openai_backend_rejects_bad_timeout(self, tmp_path):
         config = self._write(
@@ -513,24 +557,32 @@ class TestEmbeddingBackend:
         with pytest.raises(ValueError, match="batch_size"):
             config.remote_embedding_spec
 
-    def test_embedding_model_for_openai_backend_shares_fastembed_identity(
-        self, tmp_path
-    ):
-        """PR #47 review item 2: a verified remote endpoint shares the SAME
-        cache rows as local fastembed, so embedding_model is no longer
-        namespaced per host/model under the openai backend."""
+    def test_embedding_model_for_openai_backend_is_namespaced(self, tmp_path):
+        """Model choice (issue #46) reopens the narrow #47 branch's
+        shared-cache-row decision: a genuinely different model must not
+        share fastembed's cache rows, so embedding_model is namespaced per
+        host/model (and per prefix pair, see identity_for) again."""
         config = self._write(
             tmp_path,
             '[embedding]\nbackend = "openai"\n'
             'base_url = "http://localhost:8000/v1"\n'
             'model = "bge-small-en-v1.5"\n',
         )
-        assert config.embedding_model == DEFAULT_MODEL
+        assert config.embedding_model == "openai:localhost:8000/bge-small-en-v1.5"
 
-    def test_openai_backend_rejects_verify_startup_key(self, tmp_path):
-        """PR #47 review item 2: the cosine-parity check is now mandatory,
-        so a config still setting the removed [embedding].verify_startup
-        key must fail loudly rather than silently do nothing."""
+    def test_verify_startup_defaults_true(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        assert config.remote_embedding_verify_startup is True
+
+    def test_verify_startup_can_be_disabled(self, tmp_path):
+        """Model choice (issue #46) reopened this as a real, documented
+        opt-out -- gated at the call site on is_bge_small_compatible, not
+        rejected here the way the narrow #47 branch rejected it."""
         config = self._write(
             tmp_path,
             '[embedding]\nbackend = "openai"\n'
@@ -538,8 +590,21 @@ class TestEmbeddingBackend:
             'model = "bge-small-en-v1.5"\n'
             "verify_startup = false\n",
         )
+        assert config.remote_embedding_verify_startup is False
+        # Not rejected by remote_embedding_spec either -- the two
+        # properties are independent.
+        assert config.remote_embedding_spec is not None
+
+    def test_verify_startup_rejects_non_bool(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n'
+            'verify_startup = "yes"\n',
+        )
         with pytest.raises(ValueError, match="verify_startup"):
-            config.remote_embedding_spec
+            config.remote_embedding_verify_startup
 
 
 class TestDisableRemoteEmbeddingBackend:

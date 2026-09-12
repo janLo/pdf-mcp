@@ -1,36 +1,31 @@
 """
 Thin wrapper around fastembed (local) and remote_embedder (an OpenAI-
-compatible HTTP endpoint serving bge-small-en-v1.5 remotely) for lazy model
-loading and text embedding.
+compatible HTTP endpoint) for lazy model loading and text embedding.
 
 The embedding model is loaded once per process (singleton). If the configured
 model name changes mid-process, the singleton reloads automatically.
 fastembed is an optional dependency; calling encode() when it is not installed
 raises ImportError with an actionable install hint.
 
-Backend selection is by whether a RemoteSpec is currently registered
-(`configure_remote()`), NOT by `model_name` -- PDFConfig.embedding_model
-always returns the bare fastembed identity ("BAAI/bge-small-en-v1.5")
-regardless of backend, precisely so a verified remote endpoint shares the
-same vector-cache rows as local fastembed (see PDFConfig.embedding_model's
-docstring). `configure_remote()` registers the RemoteSpec (base_url,
-api_key, ...) the remote path needs -- call it once per process, right
-after resolving PDFConfig (and after the startup safety check decides
-whether the endpoint is trustworthy), before any
+Backend selection is by the shape of `model_name`, the identity string
+PDFConfig.embedding_model produces: an "openai:" prefix routes to
+remote_embedder; anything else is a bare fastembed model name, exactly as
+before this backend existed. `configure_remote()` registers the RemoteSpec
+(base_url, api_key, ...) a remote identity needs but cannot itself carry --
+call it once per process, right after resolving PDFConfig, before any
 encode()/encode_query()/check_available() call. server.py does this at its
-PDFConfig call site; every other call site (corpus.py, the `_embed`
-closures in server.py, tests that stub `model_name="fake-model"`) is
-unchanged by this backend's existence.
+PDFConfig call site; every other call site (corpus.py, the `_embed` closures
+in server.py, tests that stub `model_name="fake-model"`) is unchanged by
+this backend's existence.
 
 Note: _get_model (and the module-level _remote_spec below) is not
 thread-safe. This is intentional — FastMCP uses asyncio with a single thread
 for STDIO transport, so concurrent access cannot occur in normal operation.
 
-check_available() never makes a network call when a remote backend is
-registered: it is called inside `except Exception: pass` in server.py's
-startup capability probe, so a network probe there would silently demote a
-temporarily-down endpoint to keyword-only search rather than fail at the
-point of actual use.
+check_available() never makes a network call for a remote identity: it is
+called inside `except Exception: pass` in server.py's startup capability
+probe, so a network probe there would silently demote a temporarily-down
+endpoint to keyword-only search rather than fail at the point of actual use.
 """
 
 from __future__ import annotations
@@ -51,32 +46,66 @@ _remote_spec: "RemoteSpec | None" = None
 
 
 def configure_remote(spec: "RemoteSpec | None") -> None:
-    """Register the RemoteSpec that switches encode()/encode_query() to the
-    remote backend, or clear it (pass None) to switch back to fastembed.
+    """Register the RemoteSpec used by any 'openai:'-prefixed identity.
 
     Mirrors _model/_model_name_loaded in being process-global, single-
     active-config state: there is one embedding configuration per process,
-    same as today's single fastembed singleton. This is the only thing that
-    turns the remote path on or off -- see the module docstring for why
-    `model_name` no longer carries that signal.
+    same as today's single fastembed singleton. Pass None to clear it
+    (matches PDFConfig.remote_embedding_spec returning None for the
+    fastembed backend).
     """
     global _remote_spec
     _remote_spec = spec
 
 
+def _is_remote_identity(model_name: str) -> bool:
+    return model_name.startswith("openai:")
+
+
+# Substring match, case-insensitive, against the bare model name (fastembed)
+# or the trailing "/<model>" segment of a remote identity string (see
+# identity_for). Deliberately a heuristic, not a weights fingerprint: this
+# codebase has no way to introspect what a remote server actually loaded,
+# only the name the user configured it to load under. A model whose name
+# doesn't mention bge-small is treated as "distribution unknown" even if it
+# happens to be a bge-small fine-tune -- the safe direction to be wrong in,
+# since the alternative (assuming compatibility by default) is exactly the
+# silent-mislabeling failure this check exists to prevent. See
+# PDFConfig.confidence_threshold in config.py, the only caller.
+_BGE_SMALL_MARKER = "bge-small"
+
+
+def is_bge_small_compatible(model_name: str) -> bool:
+    """True when `model_name` names a bge-small-en-v1.5 (family) model.
+
+    `model_name` is either a bare fastembed model ("BAAI/bge-small-en-v1.5")
+    or a full "openai:<host>/<model>[@<hash>]" identity -- both are handled
+    by a case-insensitive substring check for "bge-small", so callers can
+    pass either PDFConfig.embedding_model's identity or a bare
+    RemoteSpec.model/the fastembed `model` config key without branching.
+    """
+    return _BGE_SMALL_MARKER in model_name.lower()
+
+
 def check_available(model_name: str) -> None:
     """
-    Raise ImportError (fastembed missing) or ValueError (unknown fastembed
-    model name).
+    Raise ImportError (fastembed missing) or ValueError (unknown model name /
+    misconfigured or unregistered remote backend).
 
     Call this before running semantic search to surface config errors
-    before any expensive PDF work begins. When a remote backend is
-    registered (`configure_remote`), this is a no-op -- OFFLINE ONLY, see
-    the module docstring for why no network probe happens here; `model_name`
-    is only consulted for the fastembed backend, since it always names a
-    real fastembed model regardless of which backend is active.
+    before any expensive PDF work begins. For a remote identity this is
+    OFFLINE ONLY -- see the module docstring for why no network probe
+    happens here.
     """
-    if _remote_spec is not None:
+    if _is_remote_identity(model_name):
+        if _remote_spec is None:
+            raise ValueError(
+                f"embedding identity {model_name!r} is a remote ('openai:') "
+                "identity, but no remote backend is configured for this "
+                "process. This should not happen when model_name came from "
+                "PDFConfig.embedding_model -- configure_remote() must be "
+                "called once after resolving PDFConfig, before this."
+            )
         return
     try:
         from fastembed import TextEmbedding
@@ -333,26 +362,28 @@ def _l2_normalize(arr: Any) -> Any:
     return arr / np.clip(norms, 1e-12, None)
 
 
-def _encode_remote(texts: list[str]) -> Any:
+def _encode_remote(texts: list[str], *, is_query: bool) -> Any:
     import numpy as np  # type: ignore[import-untyped]
 
     if not texts:
         return np.empty((0,), dtype=np.float32)
     if _remote_spec is None:
         raise ValueError(
-            "_encode_remote() called with no remote backend registered -- "
-            "configure_remote() must be called after resolving PDFConfig "
-            "before this runs"
+            "a remote ('openai:') embedding identity is in use but no "
+            "remote backend is configured for this process -- "
+            "configure_remote() must be called after resolving PDFConfig"
         )
     from . import remote_embedder
 
-    arr = remote_embedder.encode(texts, _remote_spec)
+    prefix = _remote_spec.query_prefix if is_query else _remote_spec.document_prefix
+    arr = remote_embedder.encode(texts, _remote_spec, prefix=prefix)
     return _l2_normalize(arr)
 
 
 def encode(texts: list[str], model_name: str) -> Any:
     """
-    Encode a list of texts into embedding vectors.
+    Encode a list of texts (the DOCUMENT side -- see encode_query for
+    queries) into embedding vectors.
 
     Returns an ndarray of shape (N, D), dtype float32, L2-normalized so that
     a dot product equals cosine similarity. We normalize here rather than rely
@@ -360,20 +391,23 @@ def encode(texts: list[str], model_name: str) -> Any:
     models (e.g. multilingual-e5-large, norm ~28 after its CLS->mean pooling
     change), which would otherwise break semantic scoring in server.py.
 
-    `model_name` is the identity string from PDFConfig.embedding_model --
-    always the bare fastembed model name, even when the remote backend is
-    active (see the module docstring). Routing is instead by whether a
-    RemoteSpec is currently registered via configure_remote(): if so, this
-    delegates to remote_embedder using that spec and `model_name` is
-    ignored; otherwise it is a fastembed model name, exactly as before this
-    backend existed.
+    `model_name` is the identity string from PDFConfig.embedding_model. An
+    "openai:"-prefixed identity routes to remote_embedder using the spec
+    registered by configure_remote(); anything else is a fastembed model
+    name, exactly as before this backend existed.
+
+    Model choice for a remote identity is real here (unlike the narrower
+    first version of this feature): `document_prefix` is applied for a
+    remote identity per the configured RemoteSpec. See the TODO on
+    `_SEMANTIC_CONFIDENCE_THRESHOLD` in server.py for the calibration
+    problem this reopens -- NOT addressed by this dispatch logic itself.
     """
     import numpy as np  # type: ignore[import-untyped]
 
     if not texts:
         return np.empty((0,), dtype=np.float32)
-    if _remote_spec is not None:
-        return _encode_remote(texts)
+    if _is_remote_identity(model_name):
+        return _encode_remote(texts, is_query=False)
     model = _get_model(model_name)
     if _is_cuda(model):
         vecs = list(model.embed(texts))
@@ -385,17 +419,12 @@ def encode(texts: list[str], model_name: str) -> Any:
 
 def encode_query(text: str, model_name: str) -> Any:
     """
-    Encode a single query string.
+    Encode a single query string (the QUERY side of an asymmetric model,
+    e.g. nomic's "search_query:" vs "search_document:" prefixes -- applied
+    only for a remote identity; document_prefix/query_prefix default to "").
 
     Returns an ndarray of shape (D,), dtype float32.
-
-    # TODO(model-choice, see issue #46): this is the plug-in point for an
-    # asymmetric query prefix (e.g. nomic's "search_query:" vs
-    # "search_document:") once a remote identity can name an arbitrary
-    # model -- bge-small-en-v1.5, the only model this version serves
-    # remotely, uses no such prefix, so `encode` and `encode_query` are
-    # identical here for both backends.
     """
-    if _remote_spec is not None:
-        return _encode_remote([text])[0]
+    if _is_remote_identity(model_name):
+        return _encode_remote([text], is_query=True)[0]
     return encode([text], model_name)[0]
