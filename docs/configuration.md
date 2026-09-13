@@ -81,6 +81,11 @@ PDF_MCP_MAX_WORKERS=8
 # CUDA)" below.
 PDF_MCP_CUDA=1
 
+# OCR with no Tesseract installed: 1 = download pdf-mcp's portable,
+# English-only Tesseract on the first OCR call (the Claude Desktop bundle
+# sets this); unset = never. [ocr] auto_install in the config file wins.
+PDF_MCP_OCR_AUTO_INSTALL=1
+
 # HTTP transport only (pdf-mcp-http); ignored by the stdio entry point.
 PDF_MCP_AUTH_TOKEN=<secret>       # required, no default
 PDF_MCP_HTTP_HOST=127.0.0.1       # bind address
@@ -306,6 +311,46 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 Substitute your own port if you changed `PDF_MCP_HOST_PORT` from its 8802
 default.
 
+## Offline prewarm (`pdf-mcp-warm`)
+
+`pdf_corpus_warm` (the MCP tool) is built to fit inside one client-side
+tool call: it caps at 100 files and `budget_seconds <= 300` per call (see
+[tool-reference.md](tool-reference.md#pdf_corpus_warm)), so a folder that
+does not fit either limit means re-issuing the same call by hand,
+possibly many times, from inside a chat session — and a query against a
+still-partly-warm corpus just times out in the meantime.
+
+`pdf-mcp-warm` is a separate command installed alongside `pdf-mcp` (same
+`pip install`/`uvx` package, a second entry point) that runs outside any
+MCP client, so neither limit applies. It walks a whole folder and warms
+it to completion in one run, writing to the exact same on-disk cache
+(`PDF_MCP_CACHE_DIR`, this file's `[paths]` allow-list, `[embedding].model`)
+the server reads — run it once before a chat session so `pdf_search` /
+`pdf_corpus_search` hit a warm cache instead of timing out.
+
+```bash
+pdf-mcp-warm /path/to/reports/ --recursive
+pdf-mcp-warm doc1.pdf doc2.pdf --no-embeddings   # text only, skip vectors
+pdf-mcp-warm /path/to/reports/ --model BAAI/bge-small-en-v1.5
+```
+
+Embeddings **and** the section-granularity search index are both warmed
+by default (`--no-embeddings` / `--no-sections` opt out of each). Unlike
+`pdf_corpus_warm`, which leaves `sections` off by default to stay
+budget-conscious, this CLI has no budget to protect — and skipping either
+just moves the cost to query time instead of removing it: a prewarm that
+skips vectors leaves semantic search to time out later, and skipping
+sections leaves a large document's first
+`pdf_search(granularity="section")` call to build that index from
+scratch, on its own, which can by itself exceed a timeout-bounded MCP
+client's budget even on an otherwise fully-warmed corpus. Progress and a
+final summary go to stderr; already-cached documents are free (see
+`pdf_corpus_warm` above), so re-running after an interrupt (Ctrl-C, a
+crash) resumes rather than redoing work. If your corpus is large enough
+to need this, also raise `PDF_MCP_CACHE_TTL` (below) — the default
+24-hour TTL will otherwise
+start expiring a prewarm you're not actively querying.
+
 ## Caching
 
 The server uses SQLite for persistent caching.
@@ -370,6 +415,22 @@ pdf-mcp works offline except for these:
 
   The config file wins over the other two; `check = true` turns the check on
   for any install.
+- **Tesseract for OCR (Claude Desktop bundle only):** the first OCR call
+  on a computer with no Tesseract installed downloads a portable,
+  English-only Tesseract (about 14 MB) from
+  `github.com/jztan/pdf-mcp-tesseract` releases, checked against a SHA-256
+  shipped in pdf-mcp, and unpacks it into `<cache dir>/tesseract/`.
+  Windows x64 and macOS (Apple Silicon and Intel) only. A Tesseract you
+  installed yourself is always used first, and nothing downloads until OCR
+  is asked for. pip and uvx installs never download it unless the config
+  says so. Turn it off in `~/.config/pdf-mcp/config.toml`:
+
+  ```toml
+  [ocr]
+  auto_install = false
+  ```
+
+  `auto_install = true` turns it on for any install.
 - **Bundle first start:** the Claude Desktop bundle downloads uv from
   Astral's GitHub releases (`github.com/astral-sh/uv`, checked against a
   SHA-256 shipped in the bundle), then Python from Astral's

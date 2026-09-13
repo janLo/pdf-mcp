@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`pdf-mcp-warm`: an offline entry point that warms a whole corpus to
+  completion, outside any MCP client.** `pdf_corpus_warm` (the tool) caps
+  at 100 files and 300 seconds per call by design, so a folder that does
+  not fit either limit needs the same call re-issued by hand, and a query
+  against a still-partly-warm corpus times out in the meantime. Installed
+  alongside `pdf-mcp` (same package, a second console script), it walks a
+  folder (`--recursive`), warms embeddings *and* the section-granularity
+  search index by default (`--no-embeddings` / `--no-sections` opt out),
+  and writes to the exact cache the server reads — already-cached
+  documents are free, so re-running after an interrupt resumes rather
+  than redoing work. See
+  [docs/configuration.md](docs/configuration.md#offline-prewarm-pdf-mcp-warm) ([#41](https://github.com/jztan/pdf-mcp/pull/41)).
+
+- **`pdf_corpus_warm(paths, sections=True)`: warm the section-granularity
+  search index ahead of query time.** Previously, a corpus warmed with
+  `pdf_corpus_warm` (any combination of text/embeddings) still left
+  `pdf_search(granularity="section")` to build that document's section
+  index from scratch, in full, serially, on the first section-mode
+  query — for a heuristic-fallback document with no TOC, measured at
+  ~32ms/page, enough on its own to time out a timeout-bounded MCP client
+  on a large document even though the rest of the corpus was fully warm.
+  `sections=True` (default `False`, to stay budget-conscious like
+  `embeddings`) builds it during warm instead, in the same parallel
+  worker pool that already extracts text — including backfilling it for
+  documents that were already fully cached before this flag was first
+  requested. That backfill is itself budgeted: a doc the deadline cuts
+  off joins `unprocessed` (`warm_complete: false`) instead of running
+  past `budget_seconds`, and finishes on a later call. See
+  [docs/tool-reference.md](docs/tool-reference.md#pdf_corpus_warm) and
+  [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md) ([#41](https://github.com/jztan/pdf-mcp/pull/41)).
+
+- **OCR and page rendering now use up to 16 parallel workers on many-core
+  hosts, up from a flat cap of 8.** Re-measured on a 24-thread host: OCR
+  and render dispatch were both still gaining at 16 workers (8.09x /
+  6.04x), not yet plateaued, so the old flat cap left real throughput
+  idle on many-core machines. Below 16 cores this is unchanged from
+  before (worker count was already governed by the core count, not the
+  cap); the new ceiling of 16 stands pending a benchmark past that.
+  `PDF_MCP_MAX_WORKERS` still only clamps the worker count down, same as
+  before. Note for CPU-limited containers: worker count is sized from
+  the host's total logical CPUs, not a cgroup quota, so this can double
+  oversubscription under `docker run --cpus=N`; set
+  `PDF_MCP_MAX_WORKERS` explicitly there. See
+  [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md) ([#41](https://github.com/jztan/pdf-mcp/pull/41)).
+
 - **One-click install for Claude Desktop.** Every release now ships a
   `pdf-mcp-<version>.mcpb` bundle. Download it and drag it onto Claude
   Desktop's Settings > Extensions page; nothing needs to be installed
@@ -20,7 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in Claude Desktop's Chat, on Windows 10+, Intel Macs with macOS 13+, and
   Apple Silicon Macs with macOS 14+. If setup cannot finish (for example the
   computer is offline), Claude is told why in plain words instead of
-  seeing a disconnected server.
+  seeing a disconnected server. Each release also carries the bundle as
+  `pdf-mcp.mcpb`, so
+  https://github.com/jztan/pdf-mcp/releases/latest/download/pdf-mcp.mcpb
+  always downloads the newest one.
 
 - **Bundle installs learn about new versions.** Once a day the bundle asks
   PyPI whether a newer pdf-mcp exists, and Claude mentions it once, on the
@@ -34,6 +82,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or the common ASCII-transliteration spellings (`Kuendigung`, `Strasse` for
   `Straße`) — none of which the default English/porter index could match.
   Off by default; see [docs/configuration.md](docs/configuration.md).
+
+- **OCR with nothing to install (Claude Desktop bundle).** On Windows and
+  Macs, the first OCR call on a computer with no Tesseract downloads a
+  portable, English-only Tesseract (about 14 MB), checks it against a
+  SHA-256 shipped in pdf-mcp, and uses it. A Tesseract you installed
+  always wins. If the download takes longer than about 20 seconds, Claude
+  is told OCR is being set up and to try again shortly. `server_info`
+  reports where OCR comes from under `ocr.source`. Turn it off with
+  `[ocr] auto_install = false`; pip and uvx installs never download it
+  unless that is set to `true`.
 
 ### Fixed
 
@@ -75,6 +133,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mid-word cuts in `mode="auto"` snippets fell from 135 of 425 to 1 (a
   URL longer than the widening limit), and wrong or missing markers from
   283 to 0.
+
+### Contributors
+
+- @janLo — `pdf-mcp-warm` offline prewarm, section-index warming in `pdf_corpus_warm`, and a core-scaled OCR/render worker pool, benchmarked on a 24-thread host ([#41](https://github.com/jztan/pdf-mcp/pull/41))
 
 ## [3.2.0] - 2026-09-12
 ### Added

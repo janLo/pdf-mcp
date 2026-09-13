@@ -36,6 +36,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -423,6 +424,14 @@ def mcpb_asset_for_upload(project_root: Path, new_version: str) -> Path | None:
     return path
 
 
+def stable_bundle_copy(bundle: Path) -> Path:
+    """The same bytes under build_mcpb.STABLE_FILENAME, for the
+    releases/latest/download link in the README and on the site."""
+    stable = bundle.with_name(build_mcpb.STABLE_FILENAME)
+    shutil.copyfile(bundle, stable)
+    return stable
+
+
 def update_init_py(project_root: Path, new_version: str, dry_run: bool) -> None:
     """Update __version__ in __init__.py."""
     init_py = project_root / "src" / "pdf_mcp" / "__init__.py"
@@ -500,6 +509,44 @@ def collect_changelog_contributors(changelog: str) -> list[str]:
 
 def render_contributors_line(handles: list[str]) -> str:
     return " · ".join(f"[@{h}](https://github.com/{h})" for h in handles)
+
+
+#: A block between these markers describes something merged but not yet
+#: released (GitHub shows develop's README, so it is public before the
+#: release). The release deletes every such block, so a notice like "coming
+#: in the next release" cannot outlive the release it announces.
+UNTIL_RELEASE_START = "<!-- until-release -->"
+UNTIL_RELEASE_END = "<!-- /until-release -->"
+UNTIL_RELEASE_FILES = ("README.md", "docs/clients.md")
+
+
+def strip_until_release_blocks(text: str) -> str:
+    starts, ends = text.count(UNTIL_RELEASE_START), text.count(UNTIL_RELEASE_END)
+    if starts != ends:
+        raise RuntimeError(
+            f"{starts} {UNTIL_RELEASE_START} but {ends} {UNTIL_RELEASE_END}; "
+            "fix the markers so the release removes exactly the notice"
+        )
+    return re.sub(
+        rf"{re.escape(UNTIL_RELEASE_START)}\n.*?{re.escape(UNTIL_RELEASE_END)}\n\n?",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+
+
+def remove_until_release_notices(project_root: Path, dry_run: bool) -> None:
+    for name in UNTIL_RELEASE_FILES:
+        path = project_root / name
+        content = path.read_text(encoding="utf-8")
+        new_content = strip_until_release_blocks(content)
+        if new_content == content:
+            continue
+        if dry_run:
+            print(f"  [DRY-RUN] Would remove the until-release notice from {name}")
+        else:
+            path.write_text(new_content, encoding="utf-8")
+            print(f"  ✓ Removed the until-release notice from {name}")
 
 
 def update_readme_contributors(project_root: Path, dry_run: bool) -> None:
@@ -1062,6 +1109,7 @@ def commit_version_bump(config: ReleaseConfig, new_version: str) -> None:
         "docs/ROADMAP.md",
         "CHANGELOG.md",
         "README.md",
+        "docs/clients.md",
         "uv.lock",
     ]
     for f in files:
@@ -1141,7 +1189,8 @@ def create_github_release(config: ReleaseConfig, new_version: str) -> None:
         print(f"  [DRY-RUN] Would create GitHub release: {tag}")
         print(
             "  [DRY-RUN] Would attach "
-            f"dist/{build_mcpb.bundle_filename(new_version)}"
+            f"dist/{build_mcpb.bundle_filename(new_version)} and the same file "
+            f"as dist/{build_mcpb.STABLE_FILENAME}"
         )
         if notes_path.exists():
             print(f"  [DRY-RUN] Title: {title}")
@@ -1158,13 +1207,18 @@ def create_github_release(config: ReleaseConfig, new_version: str) -> None:
         cmd = ["gh", "release", "create", tag, "--title", title, "--notes", notes]
         bundle = mcpb_asset_for_upload(config.project_root, new_version)
         if bundle is not None:
-            cmd.append(str(bundle))
+            cmd += [str(bundle), str(stable_bundle_copy(bundle))]
         else:
             print("  ⚠ Releasing without the .mcpb; rebuild and upload with:")
             print(f"      python scripts/build_mcpb.py --version {new_version}")
             print(
+                f"      cp dist/{build_mcpb.bundle_filename(new_version)} "
+                f"dist/{build_mcpb.STABLE_FILENAME}"
+            )
+            print(
                 f"      gh release upload {tag} "
-                f"dist/{build_mcpb.bundle_filename(new_version)}"
+                f"dist/{build_mcpb.bundle_filename(new_version)} "
+                f"dist/{build_mcpb.STABLE_FILENAME}"
             )
         result = run_command(cmd, check=False)
         if result.returncode != 0:
@@ -1543,6 +1597,7 @@ Gitflow:
     )
     update_changelog(config.project_root, new_version, config.dry_run)
     update_readme_contributors(config.project_root, config.dry_run)
+    remove_until_release_notices(config.project_root, config.dry_run)
 
     # Step 5: Commit version bump on release branch
     commit_version_bump(config, new_version)
