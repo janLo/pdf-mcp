@@ -324,6 +324,76 @@ class TestEmbeddingBackend:
         with pytest.raises(ValueError, match="http\\(s\\) URL"):
             config.remote_embedding_spec
 
+    def test_openai_backend_rejects_public_base_url(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "socket.getaddrinfo",
+            lambda *a, **k: [(2, 1, 6, "", ("203.0.113.5", 0))],
+        )
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://public.example.com:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        with pytest.raises(ValueError, match="resolves to a public address"):
+            config.remote_embedding_spec
+
+    def test_openai_backend_accepts_private_resolving_hostname(
+        self, tmp_path, monkeypatch
+    ):
+        """Covers the host.docker.internal / LAN-hostname case jztan asked
+        for -- the check resolves the hostname first, so any name that
+        lands on an RFC 1918 / link-local address passes."""
+        monkeypatch.setattr(
+            "socket.getaddrinfo",
+            lambda *a, **k: [(2, 1, 6, "", ("192.168.1.50", 0))],
+        )
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://gpu-box.lan:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        spec = config.remote_embedding_spec
+        assert spec is not None
+        assert spec.base_url == "http://gpu-box.lan:8000/v1"
+
+    def test_openai_backend_accepts_loopback_literal(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://127.0.0.1:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        spec = config.remote_embedding_spec
+        assert spec is not None
+
+    def test_openai_backend_rejects_public_base_url_without_leaking_credentials(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "socket.getaddrinfo",
+            lambda *a, **k: [(2, 1, 6, "", ("203.0.113.5", 0))],
+        )
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://user:hunter2@public.example.com:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        with pytest.raises(ValueError) as exc_info:
+            config.remote_embedding_spec
+        assert "hunter2" not in str(exc_info.value)
+
+    def test_openai_backend_rejects_base_url_with_no_hostname(self, tmp_path):
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\nbase_url = "http:///v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        with pytest.raises(ValueError, match="must include a hostname"):
+            config.remote_embedding_spec
+
     def test_openai_backend_minimal_config(self, tmp_path):
         config = self._write(
             tmp_path,

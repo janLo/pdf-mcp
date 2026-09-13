@@ -223,10 +223,20 @@ endpoint would silently write mismatched vectors into rows local fastembed
 also reads. The `api_key`, if any, and any credentials embedded in
 `base_url`, are never written into a log line or an exception message.
 
-A non-loopback `base_url` sends page and query text over the network to
-that host — the same privacy consideration as any other outbound request
-this server makes (see [Network requests](#network-requests)); it is your
-responsibility to point this at a server you trust.
+**`base_url` must resolve to a private/loopback address.** pdf-mcp resolves
+`base_url`'s hostname (via the same DNS lookup and private/loopback ranges
+`url_fetcher.py` uses for its own SSRF guard, reused the other way round)
+and rejects config load if it resolves to a public address. This is a guard
+against pointing pdf-mcp at a public API by accident — page and query text
+goes to whatever `base_url` names — not a security boundary: it won't catch
+a tunnel or VPN that routes a private address to a public host, and that's
+a known, accepted gap. `localhost`, `127.0.0.1`, `host.docker.internal`, a
+Docker/compose service name, or a LAN hostname/IP are all expected to pass,
+since they resolve to loopback/RFC 1918/link-local addresses. A hostname
+that doesn't resolve at all (e.g. a compose service not started yet) also
+passes this check rather than blocking config load — see [Network
+requests](#network-requests) for the general privacy consideration around
+any outbound request this server makes.
 
 `server_info`'s `search` block reports `embedding_backend` ("fastembed" or
 "openai") and, for the remote backend, `embedding_endpoint` (host:port

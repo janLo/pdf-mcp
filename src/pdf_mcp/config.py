@@ -12,8 +12,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from urllib.parse import urlsplit
+
 from .embedder import DEFAULT_MODEL
-from .remote_embedder import RemoteSpec
+from .remote_embedder import RemoteSpec, _redact_base_url
+from .url_fetcher import URLFetcher
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -203,6 +206,16 @@ class PDFConfig:
 
         `api_key_env` names an environment variable; the key itself is
         never read from or written to config.toml.
+
+        `base_url`'s hostname must resolve to a private/loopback address
+        (checked via `url_fetcher.URLFetcher._is_blocked_ip`, reused the
+        other way round) -- an accident-guard against sending page/query
+        text to a public API by mistake, not a security boundary (won't
+        catch a tunnel/VPN routing a private address to a public host). A
+        hostname that fails to resolve at all is treated as "blocked" by
+        `_is_blocked_ip` (fail-closed for its SSRF use), which here means
+        this check passes rather than raises -- e.g. a compose service
+        that hasn't started yet won't block config load.
         """
         if self.embedding_backend != "openai":
             return None
@@ -238,7 +251,26 @@ class PDFConfig:
             )
         if not (base_url.startswith("http://") or base_url.startswith("https://")):
             raise ValueError(
-                f"[embedding].base_url must be an http(s) URL, got {base_url!r}"
+                "[embedding].base_url must be an http(s) URL, got "
+                f"{_redact_base_url(base_url)!r}"
+            )
+
+        hostname = urlsplit(base_url).hostname
+        if hostname is None:
+            raise ValueError(
+                "[embedding].base_url must include a hostname, got "
+                f"{_redact_base_url(base_url)!r}"
+            )
+        if not URLFetcher._is_blocked_ip(hostname):
+            raise ValueError(
+                f"[embedding].base_url {_redact_base_url(base_url)!r} "
+                "resolves to a public address -- this guards against "
+                "pointing pdf-mcp at a public API by accident, not a "
+                "security boundary (see docs/configuration.md). Point it "
+                "at a loopback, RFC 1918/link-local, or otherwise "
+                "private-resolving address -- 'localhost', "
+                "'host.docker.internal', a Docker/compose service name, or "
+                "a LAN hostname/IP all resolve as private and are accepted."
             )
 
         model = section.get("model")

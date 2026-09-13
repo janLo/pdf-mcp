@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fastembed CPU depending on concurrency
   (`benchmark_data/bge_small_throughput_results.md`).
 
+  `base_url`'s hostname must resolve to a private/loopback address (reusing
+  `url_fetcher.py`'s `URLFetcher._is_blocked_ip` the other way round) --
+  `localhost`, `host.docker.internal`, a Docker/compose service name, and
+  LAN hostnames/IPs all resolve as private and are accepted. This is a
+  guard against pointing pdf-mcp at a public API by accident, not a
+  security boundary (it won't catch a tunnel or VPN routing a private
+  address to a public host). See `docs/configuration.md` for the full
+  rationale.
+
 - **`pdf-mcp-warm`: an offline entry point that warms a whole corpus to
   completion, outside any MCP client.** `pdf_corpus_warm` (the tool) caps
   at 100 files and 300 seconds per call by design, so a folder that does
