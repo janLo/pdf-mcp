@@ -1,0 +1,1236 @@
+{
+  "pdfs": {
+    "bgb": {
+      "page_count": 490,
+      "scenarios": {
+        "de01k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "611a",
+          "notes": "auto-derived: § 611a rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Arbeitsvertrag",
+          "relevant_pages": [
+            193
+          ]
+        },
+        "de02k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "123",
+          "notes": "auto-derived: § 123 rubric, keyword control arm",
+          "query": "Anfechtbarkeit wegen Täuschung oder Drohung",
+          "relevant_pages": [
+            48
+          ]
+        },
+        "de02n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "123",
+          "notes": "auto-derived: § 123, referrer p.51, seed=20260913",
+          "query": "Was gilt für Anfechtungsgegner ist bei einem Vertrag der andere Teil, im Falle?",
+          "relevant_pages": [
+            48
+          ]
+        },
+        "de03k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "559a",
+          "notes": "auto-derived: § 559a rubric, keyword control arm",
+          "query": "Anrechnung von Drittmitteln",
+          "relevant_pages": [
+            169
+          ]
+        },
+        "de03n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "559a",
+          "notes": "auto-derived: § 559a, referrer p.167, seed=20260913",
+          "query": "Wo ist sich bei einer Erhöhung auf die ortsübliche Vergleichsmiete ergäbe, sind Drittmittel geregelt?",
+          "relevant_pages": [
+            169
+          ]
+        },
+        "de04k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1063",
+          "notes": "auto-derived: § 1063 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Zusammentreffen mit dem Eigentum",
+          "relevant_pages": [
+            298
+          ]
+        },
+        "de05k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1867",
+          "notes": "auto-derived: § 1867 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Einstweilige Maßnahmen des Betreuungsgerichts",
+          "relevant_pages": [
+            428,
+            429
+          ]
+        },
+        "de06k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2269",
+          "notes": "auto-derived: § 2269 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Gegenseitige Einsetzung",
+          "relevant_pages": [
+            476
+          ]
+        },
+        "de07k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "74",
+          "notes": "auto-derived: § 74 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Auflösung",
+          "relevant_pages": [
+            35
+          ]
+        },
+        "de08k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "556g",
+          "notes": "auto-derived: § 556g rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Rechtsfolgen",
+          "relevant_pages": [
+            164,
+            165
+          ]
+        },
+        "de09k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1154",
+          "notes": "auto-derived: § 1154 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Abtretung der Forderung",
+          "relevant_pages": [
+            310
+          ]
+        },
+        "de10k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1841",
+          "notes": "auto-derived: § 1841 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Anlagepflicht",
+          "relevant_pages": [
+            421
+          ]
+        },
+        "de11k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2325",
+          "notes": "auto-derived: § 2325 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Pflichtteilsergänzungsanspruch bei Schenkungen",
+          "relevant_pages": [
+            483
+          ]
+        },
+        "de12k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "171",
+          "notes": "auto-derived: § 171 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Wirkungsdauer bei Kundgebung",
+          "relevant_pages": [
+            54,
+            55
+          ]
+        },
+        "de13k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "475",
+          "notes": "auto-derived: § 475 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Anwendbare Vorschriften",
+          "relevant_pages": [
+            131
+          ]
+        },
+        "de14k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "936",
+          "notes": "auto-derived: § 936 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Erlöschen von Rechten Dritter",
+          "relevant_pages": [
+            282
+          ]
+        },
+        "de15k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1844",
+          "notes": "auto-derived: § 1844 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Hinterlegung von Wertgegenständen auf Anordnung des",
+          "relevant_pages": [
+            421,
+            422
+          ]
+        },
+        "de16k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2282",
+          "notes": "auto-derived: § 2282 rubric, keyword control arm",
+          "query": "Vertretung, Form der Anfechtung",
+          "relevant_pages": [
+            477,
+            478
+          ]
+        },
+        "de16n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "2282",
+          "notes": "auto-derived: § 2282, referrer p.424, seed=20260913",
+          "query": "Wo ist zu einer Anfechtung eines Erbvertrags für den geschäftsunfähigen Betreuten als Erblasser geregelt?",
+          "relevant_pages": [
+            477,
+            478
+          ]
+        },
+        "de17k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "182",
+          "notes": "auto-derived: § 182 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Zustimmung",
+          "relevant_pages": [
+            56
+          ]
+        },
+        "de18k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "312i",
+          "notes": "auto-derived: § 312i rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Allgemeine Pflichten im elektronischen Geschäftsverkehr",
+          "relevant_pages": [
+            90
+          ]
+        },
+        "de19k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "855",
+          "notes": "auto-derived: § 855 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Besitzdiener",
+          "relevant_pages": [
+            271
+          ]
+        },
+        "de20k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1773",
+          "notes": "auto-derived: § 1773 rubric, keyword control arm",
+          "query": "Voraussetzungen der Vormundschaft",
+          "relevant_pages": [
+            402
+          ]
+        },
+        "de20n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "1773",
+          "notes": "auto-derived: § 1773, referrer p.410, seed=20260913",
+          "query": "Was gilt für Ende der Vormundschaft Die Vormundschaft endet, wenn die Voraussetzungen für ihre Begründung?",
+          "relevant_pages": [
+            402
+          ]
+        },
+        "de21k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2057a",
+          "notes": "auto-derived: § 2057a rubric, keyword control arm",
+          "query": "Ausgleichungspflicht bei besonderen Leistungen eines Abkömmlings",
+          "relevant_pages": [
+            450,
+            451
+          ]
+        },
+        "de21n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "2057a",
+          "notes": "auto-derived: § 2057a, referrer p.482, seed=20260913",
+          "query": "Wo ist ihnen im Falle der gesetzlichen Erbfolge eine Zuwendung des Erblassers oder Leistungen geregelt?",
+          "relevant_pages": [
+            450,
+            451
+          ]
+        },
+        "de22k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "234",
+          "notes": "auto-derived: § 234 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Geeignete Wertpapiere",
+          "relevant_pages": [
+            65
+          ]
+        },
+        "de23k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "327p",
+          "notes": "auto-derived: § 327p rubric, keyword control arm",
+          "query": "Weitere Nutzung nach Vertragsbeendigung",
+          "relevant_pages": [
+            101,
+            102
+          ]
+        },
+        "de23n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "327p",
+          "notes": "auto-derived: § 327p, referrer p.111, seed=20260913",
+          "query": "Was gilt für Für die Rechtsfolgen des Widerrufs von Verträgen über die Bereitstellung digitaler Produkte gilt ferner?",
+          "relevant_pages": [
+            101,
+            102
+          ]
+        },
+        "de24k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1003",
+          "notes": "auto-derived: § 1003 rubric, keyword control arm",
+          "query": "Befriedigungsrecht des Besitzers",
+          "relevant_pages": [
+            291
+          ]
+        },
+        "de24n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "1003",
+          "notes": "auto-derived: § 1003, referrer p.287, seed=20260913",
+          "query": "Wo ist zuständigen Behörde rechtzeitig angemeldet, so kann der Finder die Empfangsberechtigten nach der Vorschrift geregelt?",
+          "relevant_pages": [
+            291
+          ]
+        },
+        "de25k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1481",
+          "notes": "auto-derived: § 1481 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Haftung der Ehegatten untereinander",
+          "relevant_pages": [
+            354
+          ]
+        },
+        "de26k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2292",
+          "notes": "auto-derived: § 2292 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Aufhebung durch gemeinschaftliches Testament",
+          "relevant_pages": [
+            479
+          ]
+        },
+        "de27k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "24",
+          "notes": "auto-derived: § 24 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Sitz",
+          "relevant_pages": [
+            29
+          ]
+        },
+        "de28k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "366",
+          "notes": "auto-derived: § 366 rubric, keyword control arm",
+          "query": "Anrechnung der Leistung auf mehrere Forderungen",
+          "relevant_pages": [
+            114,
+            115
+          ]
+        },
+        "de28n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "366",
+          "notes": "auto-derived: § 366, referrer p.118, seed=20260913",
+          "query": "Wo ist solche Bestimmung erklärt oder widerspricht der andere Teil unverzüglich, so findet die Vorschrift geregelt?",
+          "relevant_pages": [
+            114,
+            115
+          ]
+        },
+        "de29k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1183",
+          "notes": "auto-derived: § 1183 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Aufhebung der Hypothek",
+          "relevant_pages": [
+            315
+          ]
+        },
+        "de30k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1317",
+          "notes": "auto-derived: § 1317 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Antragsfrist",
+          "relevant_pages": [
+            332
+          ]
+        },
+        "de31k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2018",
+          "notes": "auto-derived: § 2018 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Herausgabepflicht des Erbschaftsbesitzers",
+          "relevant_pages": [
+            445
+          ]
+        },
+        "de32k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "28",
+          "notes": "auto-derived: § 28 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Beschlussfassung des Vorstands",
+          "relevant_pages": [
+            29
+          ]
+        },
+        "de33k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "780",
+          "notes": "auto-derived: § 780 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Schuldversprechen",
+          "relevant_pages": [
+            261
+          ]
+        },
+        "de34k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1170",
+          "notes": "auto-derived: § 1170 rubric, keyword control arm",
+          "query": "Ausschluss unbekannter Gläubiger",
+          "relevant_pages": [
+            312
+          ]
+        },
+        "de34n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "1170",
+          "notes": "auto-derived: § 1170, referrer p.316, seed=20260913",
+          "query": "Was gilt für Die Ausschließung des Gläubigers mit seinem Recht?",
+          "relevant_pages": [
+            312
+          ]
+        },
+        "de35k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1832",
+          "notes": "auto-derived: § 1832 rubric, keyword control arm",
+          "query": "Ärztliche Zwangsmaßnahmen",
+          "relevant_pages": [
+            418,
+            419
+          ]
+        },
+        "de35n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "1832",
+          "notes": "auto-derived: § 1832, referrer p.414, seed=20260913",
+          "query": "Was gilt für die Einwilligung in eine ärztliche Zwangsmaßnahme nach und die Verbringung?",
+          "relevant_pages": [
+            418,
+            419
+          ]
+        },
+        "de36k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2065",
+          "notes": "auto-derived: § 2065 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Bestimmung durch Dritte",
+          "relevant_pages": [
+            452
+          ]
+        },
+        "de37k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "212",
+          "notes": "auto-derived: § 212 rubric, keyword control arm",
+          "query": "Neubeginn der Verjährung",
+          "relevant_pages": [
+            62,
+            63
+          ]
+        },
+        "de37n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "212",
+          "notes": "auto-derived: § 212, referrer p.312, seed=20260913",
+          "query": "Was gilt für das Recht des Gläubigers nicht innerhalb dieser Frist von dem Eigentümer in einer?",
+          "relevant_pages": [
+            62,
+            63
+          ]
+        },
+        "de38k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "736",
+          "notes": "auto-derived: § 736 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Liquidatoren",
+          "relevant_pages": [
+            253
+          ]
+        },
+        "de39k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1020",
+          "notes": "auto-derived: § 1020 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Schonende Ausübung",
+          "relevant_pages": [
+            292,
+            293
+          ]
+        },
+        "de40k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1607",
+          "notes": "auto-derived: § 1607 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Ersatzhaftung und gesetzlicher Forderungsübergang",
+          "relevant_pages": [
+            372
+          ]
+        },
+        "de41k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1924",
+          "notes": "auto-derived: § 1924 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Gesetzliche Erben erster Ordnung",
+          "relevant_pages": [
+            433
+          ]
+        },
+        "de42k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "109",
+          "notes": "auto-derived: § 109 rubric, keyword control arm",
+          "query": "Widerrufsrecht des anderen Teils",
+          "relevant_pages": [
+            46
+          ]
+        },
+        "de42n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "109",
+          "notes": "auto-derived: § 109, referrer p.187, seed=20260913",
+          "query": "Wo ist Sicherheitsleistung weggefallen, so entscheidet auf Antrag das Landwirtschaftsgericht über die Rückgabe der Sicherheit geregelt?",
+          "relevant_pages": [
+            46
+          ]
+        },
+        "de43k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "712a",
+          "notes": "auto-derived: § 712a rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Ausscheiden des vorletzten Gesellschafters",
+          "relevant_pages": [
+            246
+          ]
+        },
+        "de44k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1164",
+          "notes": "auto-derived: § 1164 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Übergang der Hypothek auf den Schuldner",
+          "relevant_pages": [
+            311
+          ]
+        },
+        "de45k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1617f",
+          "notes": "auto-derived: § 1617f rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Geschlechtsangepasste Form des Geburtsnamens nach sorbischer",
+          "relevant_pages": [
+            378,
+            379
+          ]
+        },
+        "de46k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2289",
+          "notes": "auto-derived: § 2289 rubric, keyword control arm",
+          "query": "Wirkung des Erbvertrags auf letztwillige Verfügungen",
+          "relevant_pages": [
+            478
+          ]
+        },
+        "de46n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "2289",
+          "notes": "auto-derived: § 2289, referrer p.476, seed=20260913",
+          "query": "Was gilt für pflichtteilsberechtigter Abkömmling der Ehegatten oder eines der Ehegatten bedacht, so findet die Vorschrift?",
+          "relevant_pages": [
+            478
+          ]
+        },
+        "de47k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "232",
+          "notes": "auto-derived: § 232 rubric, keyword control arm",
+          "query": "Arten",
+          "relevant_pages": [
+            64,
+            65
+          ]
+        },
+        "de47n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "232",
+          "notes": "auto-derived: § 232, referrer p.365, seed=20260913",
+          "query": "Was gilt für Die Art der Sicherheitsleistung bestimmt sich nach den Umständen; die Beschränkung?",
+          "relevant_pages": [
+            64,
+            65
+          ]
+        },
+        "de48k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "312a",
+          "notes": "auto-derived: § 312a rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Allgemeine Pflichten und Grundsätze bei Verbraucherverträgen",
+          "relevant_pages": [
+            86,
+            87
+          ]
+        },
+        "de49k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1000",
+          "notes": "auto-derived: § 1000 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Zurückbehaltungsrecht des Besitzers",
+          "relevant_pages": [
+            290,
+            291
+          ]
+        },
+        "de50k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1754",
+          "notes": "auto-derived: § 1754 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Wirkung der Annahme",
+          "relevant_pages": [
+            397
+          ]
+        },
+        "de51k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1945",
+          "notes": "auto-derived: § 1945 rubric, keyword control arm",
+          "query": "Form der Ausschlagung",
+          "relevant_pages": [
+            435,
+            436
+          ]
+        },
+        "de51n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "1945",
+          "notes": "auto-derived: § 1945, referrer p.437, seed=20260913",
+          "query": "Was gilt für Für die Erklärung gelten die Vorschriften?",
+          "relevant_pages": [
+            435,
+            436
+          ]
+        },
+        "de52k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "25",
+          "notes": "auto-derived: § 25 rubric, keyword control arm",
+          "query": "Verfassung",
+          "relevant_pages": [
+            29
+          ]
+        },
+        "de52n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "25",
+          "notes": "auto-derived: § 25, referrer p.406, seed=20260913",
+          "query": "Was gilt für Amtsvormundschaft bei vertraulicher Geburt Wird ein Kind vertraulich geboren?",
+          "relevant_pages": [
+            29
+          ]
+        },
+        "de53k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "437",
+          "notes": "auto-derived: § 437 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Rechte des Käufers bei Mängeln",
+          "relevant_pages": [
+            124
+          ]
+        },
+        "de54k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1056",
+          "notes": "auto-derived: § 1056 rubric, keyword control arm",
+          "query": "Miet- und Pachtverhältnisse bei Beendigung des",
+          "relevant_pages": [
+            297
+          ]
+        },
+        "de54n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "1056",
+          "notes": "auto-derived: § 1056, referrer p.460, seed=20260913",
+          "query": "Wo ist das Miet- oder Pachtverhältnis bei dem Eintritt der Nacherbfolge noch besteht, die Vorschrift geregelt?",
+          "relevant_pages": [
+            297
+          ]
+        },
+        "de55k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1617h",
+          "notes": "auto-derived: § 1617h rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Geburtsname nach dänischer Tradition",
+          "relevant_pages": [
+            379
+          ]
+        },
+        "de56k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2297",
+          "notes": "auto-derived: § 2297 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Rücktritt durch Testament",
+          "relevant_pages": [
+            479
+          ]
+        },
+        "de57k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "179",
+          "notes": "auto-derived: § 179 rubric, keyword control arm",
+          "query": "Haftung des Vertreters ohne Vertretungsmacht",
+          "relevant_pages": [
+            55,
+            56
+          ]
+        },
+        "de57n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "179",
+          "notes": "auto-derived: § 179, referrer p.81, seed=20260913",
+          "query": "Wo ist Erklärung eine eigene Haftung oder Einstandspflicht oder b) im Falle vollmachtsloser Vertretung eine geregelt?",
+          "relevant_pages": [
+            55,
+            56
+          ]
+        },
+        "de58k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "562",
+          "notes": "auto-derived: § 562 rubric, keyword control arm",
+          "query": "Umfang des Vermieterpfandrechts",
+          "relevant_pages": [
+            172
+          ]
+        },
+        "de58n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "562",
+          "notes": "auto-derived: § 562, referrer p.242, seed=20260913",
+          "query": "Wo ist Die für das Pfandrecht des Vermieters geltenden Vorschriften geregelt?",
+          "relevant_pages": [
+            172
+          ]
+        },
+        "de59k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "861",
+          "notes": "auto-derived: § 861 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Anspruch wegen Besitzentziehung",
+          "relevant_pages": [
+            272
+          ]
+        },
+        "de60k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1788",
+          "notes": "auto-derived: § 1788 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Rechte des Mündels",
+          "relevant_pages": [
+            406
+          ]
+        },
+        "de61k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1972",
+          "notes": "auto-derived: § 1972 rubric, keyword control arm",
+          "query": "Nicht betroffene Rechte",
+          "relevant_pages": [
+            439
+          ]
+        },
+        "de61n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "1972",
+          "notes": "auto-derived: § 1972, referrer p.451, seed=20260913",
+          "query": "Was gilt für Gläubiger im Aufgebotsverfahren ausgeschlossen ist; das Aufgebot erstreckt sich insoweit auch?",
+          "relevant_pages": [
+            439
+          ]
+        },
+        "de62k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "51",
+          "notes": "auto-derived: § 51 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Sperrjahr",
+          "relevant_pages": [
+            33
+          ]
+        },
+        "de63k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "492",
+          "notes": "auto-derived: § 492 rubric, keyword control arm",
+          "query": "Schriftform, Vertragsinhalt",
+          "relevant_pages": [
+            141
+          ]
+        },
+        "de63n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "492",
+          "notes": "auto-derived: § 492, referrer p.151, seed=20260913",
+          "query": "Was gilt für Das Teilzahlungsgeschäft ist nichtig, wenn die vorgeschriebene Schriftform?",
+          "relevant_pages": [
+            141
+          ]
+        },
+        "de64k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1124",
+          "notes": "auto-derived: § 1124 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Vorausverfügung über Miete oder Pacht",
+          "relevant_pages": [
+            306,
+            307
+          ]
+        },
+        "de65k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1801",
+          "notes": "auto-derived: § 1801 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Befreite Vormundschaft",
+          "relevant_pages": [
+            409
+          ]
+        },
+        "de66k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2019",
+          "notes": "auto-derived: § 2019 rubric, keyword control arm",
+          "query": "Unmittelbare Ersetzung",
+          "relevant_pages": [
+            445
+          ]
+        },
+        "de66n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "2019",
+          "notes": "auto-derived: § 2019, referrer p.448, seed=20260913",
+          "query": "Was gilt für Auf eine durch ein solches Rechtsgeschäft erworbene Forderung findet die Vorschrift?",
+          "relevant_pages": [
+            445
+          ]
+        },
+        "de67k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "128",
+          "notes": "auto-derived: § 128 rubric, keyword control arm",
+          "query": "Notarielle Beurkundung",
+          "relevant_pages": [
+            49
+          ]
+        },
+        "de67n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "128",
+          "notes": "auto-derived: § 128, referrer p.52, seed=20260913",
+          "query": "Was gilt für ohne dass beide Teile gleichzeitig anwesend sind, so kommt der Vertrag mit?",
+          "relevant_pages": [
+            49
+          ]
+        },
+        "de68k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "505a",
+          "notes": "auto-derived: § 505a rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Pflicht zur Kreditwürdigkeitsprüfung bei Verbraucherdarlehensverträgen",
+          "relevant_pages": [
+            148
+          ]
+        },
+        "de69k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "912",
+          "notes": "auto-derived: § 912 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Überbau",
+          "relevant_pages": [
+            278,
+            279
+          ]
+        },
+        "de70k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1367",
+          "notes": "auto-derived: § 1367 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Einseitige Rechtsgeschäfte",
+          "relevant_pages": [
+            338
+          ]
+        },
+        "de71k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2205",
+          "notes": "auto-derived: § 2205 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Verwaltung des Nachlasses, Verfügungsbefugnis",
+          "relevant_pages": [
+            469
+          ]
+        },
+        "de72k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "132",
+          "notes": "auto-derived: § 132 rubric, keyword control arm",
+          "query": "Ersatz des Zugehens durch Zustellung",
+          "relevant_pages": [
+            50
+          ]
+        },
+        "de72n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "132",
+          "notes": "auto-derived: § 132, referrer p.309, seed=20260913",
+          "query": "Was gilt für Hat der Eigentümer keinen Wohnsitz im Inland oder liegen die Voraussetzungen?",
+          "relevant_pages": [
+            50
+          ]
+        },
+        "de73k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "559b",
+          "notes": "auto-derived: § 559b rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Geltendmachung der Erhöhung, Wirkung der Erhöhungserklärung",
+          "relevant_pages": [
+            169,
+            170
+          ]
+        },
+        "de74k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1059b",
+          "notes": "auto-derived: § 1059b rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Unpfändbarkeit",
+          "relevant_pages": [
+            298
+          ]
+        },
+        "de75k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1678",
+          "notes": "auto-derived: § 1678 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Folgen der tatsächlichen Verhinderung oder des",
+          "relevant_pages": [
+            389,
+            390
+          ]
+        },
+        "de76k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2021",
+          "notes": "auto-derived: § 2021 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Herausgabepflicht nach Bereicherungsgrundsätzen",
+          "relevant_pages": [
+            445,
+            446
+          ]
+        },
+        "de77k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "111",
+          "notes": "auto-derived: § 111 rubric, keyword control arm",
+          "query": "Einseitige Rechtsgeschäfte",
+          "relevant_pages": [
+            46
+          ]
+        },
+        "de77n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "111",
+          "notes": "auto-derived: § 111, referrer p.382, seed=20260913",
+          "query": "Was gilt für dasselbe gilt für Verbindlichkeiten aus Rechtsgeschäften, die der Minderjährige?",
+          "relevant_pages": [
+            46
+          ]
+        },
+        "de78k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "671",
+          "notes": "auto-derived: § 671 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Widerruf",
+          "relevant_pages": [
+            225
+          ]
+        },
+        "de79k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "873",
+          "notes": "auto-derived: § 873 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Erwerb durch Einigung und Eintragung",
+          "relevant_pages": [
+            273
+          ]
+        },
+        "de80k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1774",
+          "notes": "auto-derived: § 1774 rubric, keyword control arm",
+          "query": "Vormund",
+          "relevant_pages": [
+            402,
+            403
+          ]
+        },
+        "de80n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "1774",
+          "notes": "auto-derived: § 1774, referrer p.404, seed=20260913",
+          "query": "Was gilt für die geeignet und bereit ist, die Vormundschaft ehrenamtlich zu führen, hat gegenüber?",
+          "relevant_pages": [
+            402,
+            403
+          ]
+        },
+        "de81k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "2376",
+          "notes": "auto-derived: § 2376 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Haftung des Verkäufers",
+          "relevant_pages": [
+            489
+          ]
+        },
+        "de82k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "44",
+          "notes": "auto-derived: § 44 rubric, keyword control arm",
+          "query": "Zuständigkeit und Verfahren",
+          "relevant_pages": [
+            32
+          ]
+        },
+        "de82n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "44",
+          "notes": "auto-derived: § 44, referrer p.273, seed=20260913",
+          "query": "Wo ist Einer Bezugnahme auf die Eintragungsbewilligung steht die Bezugnahme auf die bisherige Eintragung geregelt?",
+          "relevant_pages": [
+            32
+          ]
+        },
+        "de83k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "346",
+          "notes": "auto-derived: § 346 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Wirkungen des Rücktritts",
+          "relevant_pages": [
+            106
+          ]
+        },
+        "de84k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "987",
+          "notes": "auto-derived: § 987 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Nutzungen nach Rechtshängigkeit",
+          "relevant_pages": [
+            289
+          ]
+        },
+        "de85k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1748",
+          "notes": "auto-derived: § 1748 rubric, keyword control arm",
+          "query": "Ersetzung der Einwilligung eines Elternteils",
+          "relevant_pages": [
+            395,
+            396
+          ]
+        },
+        "de85n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "1748",
+          "notes": "auto-derived: § 1748, referrer p.399, seed=20260913",
+          "query": "Was gilt für über den Aufhebungsantrag vorliegen; dabei ist es unschädlich, wenn eine Belehrung oder Beratung?",
+          "relevant_pages": [
+            395,
+            396
+          ]
+        },
+        "de86k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1928",
+          "notes": "auto-derived: § 1928 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Gesetzliche Erben vierter Ordnung",
+          "relevant_pages": [
+            433
+          ]
+        },
+        "de87k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "72",
+          "notes": "auto-derived: § 72 rubric, keyword control arm",
+          "query": "Bescheinigung der Mitgliederzahl",
+          "relevant_pages": [
+            35
+          ]
+        },
+        "de87n": {
+          "arm": "semantic_xref",
+          "k": 5,
+          "norm": "72",
+          "notes": "auto-derived: § 72, referrer p.162, seed=20260913",
+          "query": "Wo ist Handelt es sich um eine aufwändige Maßnahme geregelt?",
+          "relevant_pages": [
+            35
+          ]
+        },
+        "de88k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "675w",
+          "notes": "auto-derived: § 675w rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Nachweis der Authentifizierung",
+          "relevant_pages": [
+            235
+          ]
+        },
+        "de89k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1123",
+          "notes": "auto-derived: § 1123 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Erstreckung auf Miet- oder Pachtforderung",
+          "relevant_pages": [
+            306
+          ]
+        },
+        "de90k": {
+          "arm": "keyword_control",
+          "k": 5,
+          "norm": "1859",
+          "notes": "auto-derived: § 1859 rubric, keyword control arm (no usable cross-reference for a semantic_xref pair)",
+          "query": "Gesetzliche Befreiungen",
+          "relevant_pages": [
+            426
+          ]
+        }
+      },
+      "title": "Bürgerliches Gesetzbuch (BGB)",
+      "url": "https://www.gesetze-im-internet.de/bgb/BGB.pdf"
+    }
+  }
+}

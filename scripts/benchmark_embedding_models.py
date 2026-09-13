@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pdf_mcp.server as server_module  # noqa: E402
+from bench_env import environment  # noqa: E402
 from pdf_mcp.cache import PDFCache  # noqa: E402
 from pdf_mcp.server import _resolve_path  # noqa: E402
 from pdf_mcp.server import pdf_search  # noqa: E402
@@ -162,14 +163,20 @@ def _compute_metrics(matches: list[dict], relevant_pages: set[int], k: int) -> d
     return {"recall": recall, "rr": rr, "rank_first_hit": rank_first_hit}
 
 
-def _run_scenario(pdf_path: str, query: str, relevant_pages: set[int], k: int) -> dict:
+def _run_scenario(
+    pdf_path: str,
+    query: str,
+    relevant_pages: set[int],
+    k: int,
+    mode: str = "semantic",
+) -> dict:
     """
-    Run one scenario in semantic mode and return per-scenario metrics.
+    Run one scenario in the given mode and return per-scenario metrics.
 
     Returns dict with: recall, rr, rank_first_hit, top_pages.
     On pdf_search error, returns zero metrics with empty top_pages.
     """
-    result = pdf_search(pdf_path, query, mode="semantic", max_results=k)
+    result = pdf_search(pdf_path, query, mode=mode, max_results=k)
     if "error" in result:
         return {"recall": 0.0, "rr": 0.0, "rank_first_hit": None, "top_pages": []}
     matches = result.get("matches", [])
@@ -177,7 +184,9 @@ def _run_scenario(pdf_path: str, query: str, relevant_pages: set[int], k: int) -
     return {**metrics, "top_pages": [m["page"] for m in matches[:k]]}
 
 
-def run_latency_probe(pdf_path: str, query: str, k: int, n_runs: int = 3) -> float:
+def run_latency_probe(
+    pdf_path: str, query: str, k: int, n_runs: int = 3, mode: str = "semantic"
+) -> float:
     """
     Run pdf_search n_runs times and return the median wall-clock time (ms).
 
@@ -187,7 +196,7 @@ def run_latency_probe(pdf_path: str, query: str, k: int, n_runs: int = 3) -> flo
     samples: list[float] = []
     for _ in range(n_runs):
         t0 = time.perf_counter()
-        pdf_search(pdf_path, query, mode="semantic", max_results=k)
+        pdf_search(pdf_path, query, mode=mode, max_results=k)
         samples.append((time.perf_counter() - t0) * 1000)
     samples.sort()
     return samples[len(samples) // 2]
@@ -215,6 +224,7 @@ def run_model(
     model_name: str,
     gt: dict,
     scenario_k: dict[str, int],
+    mode: str = "semantic",
 ) -> dict:
     """
     Run all scenarios in the ground truth against a single embedding model.
@@ -225,6 +235,7 @@ def run_model(
     Returns:
         {
           "model": str,
+          "mode": str,
           "embed_ms": {pdf_key: float, ...},   # cold-cache first-search time
           "p50_query_ms": float,               # warm-cache median over 3 runs
           "scenarios": [{"id": ..., "recall": ..., ...}, ...],
@@ -255,7 +266,7 @@ def run_model(
                 pdf_search(
                     pdf_paths[pdf_key],
                     s["query"],
-                    mode="semantic",
+                    mode=mode,
                     max_results=k,
                 )
                 embed_ms[pdf_key] = (time.perf_counter() - t0) * 1000
@@ -270,6 +281,7 @@ def run_model(
                         s["query"],
                         set(s["relevant_pages"]),
                         k,
+                        mode=mode,
                     )
                     scenarios.append(
                         {
@@ -285,11 +297,14 @@ def run_model(
             # Latency probe on the first scenario of the first PDF
             first_pdf_key = next(iter(gt["pdfs"]))
             probe_query, probe_k = first_query[first_pdf_key]
-            p50 = run_latency_probe(pdf_paths[first_pdf_key], probe_query, probe_k)
+            p50 = run_latency_probe(
+                pdf_paths[first_pdf_key], probe_query, probe_k, mode=mode
+            )
 
             mrr = sum(s["rr"] for s in scenarios) / len(scenarios)
             return {
                 "model": model_name,
+                "mode": mode,
                 "embed_ms": embed_ms,
                 "p50_query_ms": p50,
                 "scenarios": scenarios,
@@ -506,6 +521,9 @@ def _save_results(
     verdict: dict,
     file_timestamp: str,
     iso_timestamp: str,
+    mode: str = "semantic",
+    models: list[str] | None = None,
+    ground_truth: str = "benchmark_data/ground_truth.json",
 ) -> None:
     """Write the .txt (ANSI-stripped) and .json reports to benchmark_results/."""
     out_dir = Path("benchmark_results")
@@ -517,6 +535,10 @@ def _save_results(
 
     data = {
         "timestamp": iso_timestamp,
+        "mode": mode,
+        "models_run": models or [r["model"] for r in results],
+        "ground_truth": ground_truth,
+        "environment": environment(),
         "baseline": verdict["baseline"],
         "gate": verdict["thresholds"],
         "models": results,
@@ -536,6 +558,27 @@ SCENARIO_K = {
 }
 
 
+def _filter_ground_truth_by_arm(gt: dict, arms: list[str] | None) -> dict:
+    """Return a copy of gt with only scenarios whose 'arm' key is in arms.
+
+    Scenarios without an 'arm' key are kept (the original arxiv corpus has
+    none). No-op when arms is None.
+    """
+    if not arms:
+        return gt
+    arm_set = set(arms)
+    filtered: dict = {"pdfs": {}}
+    for pdf_key, pdf in gt["pdfs"].items():
+        scenarios = {
+            sid: s
+            for sid, s in pdf["scenarios"].items()
+            if s.get("arm", sid) in arm_set or "arm" not in s
+        }
+        if scenarios:
+            filtered["pdfs"][pdf_key] = {**pdf, "scenarios": scenarios}
+    return filtered
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -547,39 +590,79 @@ def main() -> None:
         default="benchmark_data/ground_truth.json",
         help="Path to ground truth JSON (default: benchmark_data/ground_truth.json)",
     )
+    parser.add_argument(
+        "--models",
+        default=None,
+        help=(
+            "Comma-separated fastembed model names to run "
+            "(default: the built-in MODELS list)"
+        ),
+    )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        help="Model name to use as the verdict baseline (default: MODELS' baseline)",
+    )
+    parser.add_argument(
+        "--mode",
+        default="semantic",
+        choices=["semantic", "keyword", "auto"],
+        help="pdf_search mode to run every scenario in (default: semantic)",
+    )
+    parser.add_argument(
+        "--arms",
+        default=None,
+        help=(
+            "Comma-separated 'arm' values to include (scenarios without an "
+            "'arm' key always run). Default: all scenarios."
+        ),
+    )
     args = parser.parse_args()
 
     now = datetime.now()
     file_ts = now.strftime("%Y%m%d_%H%M%S")
     iso_ts = now.strftime("%Y-%m-%dT%H:%M:%S")
 
+    model_names = [m.strip() for m in args.models.split(",")] if args.models else None
+    models_under_test = (
+        [_model_meta(name) for name in model_names] if model_names else MODELS
+    )
+    baseline_name = args.baseline or BASELINE
+    arms = [a.strip() for a in args.arms.split(",")] if args.arms else None
+
     _p(bold("\npdf-mcp Embedding-Model Live Benchmark"))
     _p("─" * 68)
-    _p(f"  Models under test: {len(MODELS)}  " f"(baseline: {BASELINE})")
+    _p(
+        f"  Models under test: {len(models_under_test)}  "
+        f"(baseline: {baseline_name})"
+    )
+    _p(f"  Mode: {args.mode}" + (f"  Arms: {', '.join(arms)}" if arms else ""))
     _p(
         f"  Gate: MRR lift ≥ {MRR_LIFT_THRESHOLD} "
         f"AND p50 latency ≤ {LATENCY_RATIO_THRESHOLD}x baseline"
     )
 
     gt = load_ground_truth(args.ground_truth)
+    gt = _filter_ground_truth_by_arm(gt, arms)
 
-    # Build scenario_k by intersecting SCENARIO_K with the loaded ground truth
-    seen_sids: set[str] = set()
+    # Build scenario_k: prefer each scenario's own "k", else SCENARIO_K, else 5
+    scenario_k: dict[str, int] = {}
     for pdf in gt["pdfs"].values():
-        seen_sids.update(pdf["scenarios"].keys())
-    scenario_k = {sid: SCENARIO_K.get(sid, 5) for sid in seen_sids}
+        for sid, s in pdf["scenarios"].items():
+            scenario_k[sid] = s.get("k", SCENARIO_K.get(sid, 5))
 
     results = []
-    for m in MODELS:
+    for m in models_under_test:
         _section(f"Running model: {m['name']}")
         try:
-            r = run_model(m["name"], gt, scenario_k)
+            r = run_model(m["name"], gt, scenario_k, mode=args.mode)
             results.append(r)
         except Exception as e:  # network/HF outage on first download
             _p(red(f"  Failed: {e}"))
             results.append(
                 {
                     "model": m["name"],
+                    "mode": args.mode,
                     "mrr": 0.0,
                     "p50_query_ms": float("inf"),
                     "embed_ms": {},
@@ -588,9 +671,17 @@ def main() -> None:
                 }
             )
 
-    verdict = compute_verdict(results, BASELINE)
+    verdict = compute_verdict(results, baseline_name)
     print_summary(results, verdict)
-    _save_results(results, verdict, file_ts, iso_ts)
+    _save_results(
+        results,
+        verdict,
+        file_ts,
+        iso_ts,
+        mode=args.mode,
+        models=[m["name"] for m in models_under_test],
+        ground_truth=args.ground_truth,
+    )
 
     _p()
     _p(f"  Saved: benchmark_results/embedding_models_{file_ts}.txt")

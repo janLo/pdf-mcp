@@ -443,3 +443,296 @@ class TestMainIntegration:
         assert data["verdict"]["baseline"] == "BAAI/bge-small-en-v1.5"
         out = bem._strip_ansi("\n".join(bem._OUTPUT))
         assert "Verdict" in out
+
+    def test_models_flag_limits_models(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        gt_path = tmp_path / "benchmark_data" / "ground_truth.json"
+        gt_path.parent.mkdir(parents=True)
+        gt_path.write_text(
+            json.dumps(
+                {
+                    "pdfs": {
+                        "fake": {
+                            "url": "https://example.com/x.pdf",
+                            "title": "X",
+                            "page_count": 5,
+                            "scenarios": {
+                                "1a": {"query": "q1", "relevant_pages": [1]},
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/fake.pdf", None))
+        monkeypatch.setattr(
+            bem, "pdf_search", lambda pdf, q, mode, max_results: {"matches": []}
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "benchmark_embedding_models.py",
+                "--ground-truth",
+                str(gt_path),
+                "--models",
+                "BAAI/bge-small-en-v1.5",
+            ],
+        )
+        bem._OUTPUT.clear()
+        bem.main()
+        data = json.loads(
+            next((tmp_path / "benchmark_results").glob("*.json")).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert len(data["models"]) == 1
+        assert data["models"][0]["model"] == "BAAI/bge-small-en-v1.5"
+        assert data["models_run"] == ["BAAI/bge-small-en-v1.5"]
+
+    def test_mode_flag_in_saved_json(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        gt_path = tmp_path / "benchmark_data" / "ground_truth.json"
+        gt_path.parent.mkdir(parents=True)
+        gt_path.write_text(
+            json.dumps(
+                {
+                    "pdfs": {
+                        "fake": {
+                            "url": "https://example.com/x.pdf",
+                            "title": "X",
+                            "page_count": 5,
+                            "scenarios": {
+                                "1a": {"query": "q1", "relevant_pages": [1]},
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        captured_modes = []
+
+        def fake_search(pdf, q, mode, max_results):
+            captured_modes.append(mode)
+            return {"matches": []}
+
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/fake.pdf", None))
+        monkeypatch.setattr(bem, "pdf_search", fake_search)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "benchmark_embedding_models.py",
+                "--ground-truth",
+                str(gt_path),
+                "--models",
+                "BAAI/bge-small-en-v1.5",
+                "--mode",
+                "keyword",
+            ],
+        )
+        bem._OUTPUT.clear()
+        bem.main()
+        data = json.loads(
+            next((tmp_path / "benchmark_results").glob("*.json")).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert data["mode"] == "keyword"
+        assert data["models"][0]["mode"] == "keyword"
+        assert all(m == "keyword" for m in captured_modes)
+
+    def test_arms_flag_filters_scenarios(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        gt_path = tmp_path / "benchmark_data" / "ground_truth.json"
+        gt_path.parent.mkdir(parents=True)
+        gt_path.write_text(
+            json.dumps(
+                {
+                    "pdfs": {
+                        "fake": {
+                            "url": "https://example.com/x.pdf",
+                            "title": "X",
+                            "page_count": 5,
+                            "scenarios": {
+                                "de1k": {
+                                    "query": "q1",
+                                    "relevant_pages": [1],
+                                    "arm": "keyword_control",
+                                },
+                                "de1n": {
+                                    "query": "q2",
+                                    "relevant_pages": [2],
+                                    "arm": "semantic_xref",
+                                },
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        seen_sids = []
+
+        def fake_search(pdf, q, mode, max_results):
+            seen_sids.append(q)
+            return {"matches": []}
+
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/fake.pdf", None))
+        monkeypatch.setattr(bem, "pdf_search", fake_search)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "benchmark_embedding_models.py",
+                "--ground-truth",
+                str(gt_path),
+                "--models",
+                "BAAI/bge-small-en-v1.5",
+                "--arms",
+                "semantic_xref",
+            ],
+        )
+        bem._OUTPUT.clear()
+        bem.main()
+        data = json.loads(
+            next((tmp_path / "benchmark_results").glob("*.json")).read_text(
+                encoding="utf-8"
+            )
+        )
+        scenario_ids = [s["id"] for s in data["models"][0]["scenarios"]]
+        assert scenario_ids == ["de1n"]
+        assert "q1" not in seen_sids
+
+
+class TestModeForwarding:
+    def test_run_scenario_forwards_mode(self, monkeypatch):
+        captured = {}
+
+        def fake_search(pdf_path, query, mode, max_results):
+            captured["mode"] = mode
+            return {"matches": []}
+
+        monkeypatch.setattr(bem, "pdf_search", fake_search)
+        bem._run_scenario("/tmp/x.pdf", "q", {1}, k=5, mode="keyword")
+        assert captured["mode"] == "keyword"
+
+    def test_run_scenario_defaults_to_semantic(self, monkeypatch):
+        captured = {}
+
+        def fake_search(pdf_path, query, mode, max_results):
+            captured["mode"] = mode
+            return {"matches": []}
+
+        monkeypatch.setattr(bem, "pdf_search", fake_search)
+        bem._run_scenario("/tmp/x.pdf", "q", {1}, k=5)
+        assert captured["mode"] == "semantic"
+
+    def test_run_latency_probe_forwards_mode(self, monkeypatch):
+        captured = []
+
+        def fake_search(pdf_path, query, mode, max_results):
+            captured.append(mode)
+            return {"matches": []}
+
+        monkeypatch.setattr(bem, "pdf_search", fake_search)
+        bem.run_latency_probe("/tmp/x.pdf", "q", k=5, n_runs=2, mode="keyword")
+        assert captured == ["keyword", "keyword"]
+
+    def test_run_model_forwards_mode_to_warmup_and_probe(self, monkeypatch):
+        gt = {
+            "pdfs": {
+                "x": {
+                    "url": "u",
+                    "title": "X",
+                    "page_count": 1,
+                    "scenarios": {"1a": {"query": "q", "relevant_pages": [1]}},
+                }
+            }
+        }
+        captured_modes = []
+
+        def fake_search(pdf_path, query, mode, max_results):
+            captured_modes.append(mode)
+            return {"matches": [{"page": 1}]}
+
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/x.pdf", None))
+        monkeypatch.setattr(bem, "pdf_search", fake_search)
+        result = bem.run_model(
+            model_name="BAAI/bge-base-en-v1.5",
+            gt=gt,
+            scenario_k={"1a": 5},
+            mode="keyword",
+        )
+        assert result["mode"] == "keyword"
+        assert all(m == "keyword" for m in captured_modes)
+
+
+class TestScenarioK:
+    def test_scenario_k_prefers_json_value(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        gt_path = tmp_path / "benchmark_data" / "ground_truth.json"
+        gt_path.parent.mkdir(parents=True)
+        gt_path.write_text(
+            json.dumps(
+                {
+                    "pdfs": {
+                        "fake": {
+                            "url": "https://example.com/x.pdf",
+                            "title": "X",
+                            "page_count": 5,
+                            "scenarios": {
+                                "de1n": {
+                                    "query": "q1",
+                                    "relevant_pages": [1],
+                                    "k": 7,
+                                },
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        captured_k = []
+
+        def fake_search(pdf, q, mode, max_results):
+            captured_k.append(max_results)
+            return {"matches": []}
+
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/fake.pdf", None))
+        monkeypatch.setattr(bem, "pdf_search", fake_search)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "benchmark_embedding_models.py",
+                "--ground-truth",
+                str(gt_path),
+                "--models",
+                "BAAI/bge-small-en-v1.5",
+            ],
+        )
+        bem._OUTPUT.clear()
+        bem.main()
+        assert 7 in captured_k
+
+    def test_scenario_k_falls_back_to_scenario_k_table(self):
+        gt = {
+            "pdfs": {
+                "x": {
+                    "scenarios": {
+                        "3a": {"query": "q", "relevant_pages": [1]},
+                        "unknown_id": {"query": "q2", "relevant_pages": [1]},
+                    }
+                }
+            }
+        }
+        scenario_k = {}
+        for pdf in gt["pdfs"].values():
+            for sid, s in pdf["scenarios"].items():
+                scenario_k[sid] = s.get("k", bem.SCENARIO_K.get(sid, 5))
+        assert scenario_k["3a"] == 3  # from SCENARIO_K
+        assert scenario_k["unknown_id"] == 5  # default fallback
