@@ -1,5 +1,5 @@
 {
-  "eligible_norm_count": 818,
+  "eligible_norm_count": 809,
   "environment": {
     "executable": "/home/jan/devel/pdf-mcp-3/.venv/bin/python3",
     "implementation": "CPython",
@@ -15,18 +15,19 @@
     "python": "3.12.2",
     "sqlite": "3.45.1"
   },
-  "sample_size": 90,
-  "sampled_norm_count": 90,
-  "scenario_count": 119,
+  "sample_size": 300,
+  "sampled_norm_count": 300,
+  "scenario_count": 419,
   "script_version": 1,
   "seed": 20260913,
   "sha256": "d75a31513293eaf31c166e0985fe1f8586158ceaf56614f3dfd50da183935786",
   "skip_counts": {
-    "empty_clause": 5,
-    "natural_query_rejected": 27,
+    "empty_clause": 13,
+    "external_statute_citation": 59,
+    "natural_query_rejected": 137,
     "no_referrer": 1,
     "range_entry": 24,
-    "referrer_too_close": 28,
+    "referrer_too_close": 30,
     "weggefallen": 23
   }
 }

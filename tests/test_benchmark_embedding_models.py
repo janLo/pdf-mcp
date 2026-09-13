@@ -806,3 +806,116 @@ class TestScenarioK:
                 scenario_k[sid] = s.get("k", bem.SCENARIO_K.get(sid, 5))
         assert scenario_k["3a"] == 3  # from SCENARIO_K
         assert scenario_k["unknown_id"] == 5  # default fallback
+
+
+class TestPatchOnnxGraphOptimizationLevel:
+    def test_downgrades_only_ort_enable_all(self, monkeypatch):
+        import onnxruntime as ort
+
+        calls = []
+        orig_init = ort.InferenceSession.__init__
+
+        class FakeSessionOptions:
+            def __init__(self, level):
+                self.graph_optimization_level = level
+
+        try:
+
+            def fake_init(self, path_or_bytes, sess_options=None, **kw):
+                calls.append(sess_options.graph_optimization_level)
+
+            monkeypatch.setattr(ort.InferenceSession, "__init__", fake_init)
+            bem._patch_onnx_graph_optimization_level()
+
+            # ORT_ENABLE_ALL is downgraded to ORT_ENABLE_EXTENDED
+            so_all = FakeSessionOptions(ort.GraphOptimizationLevel.ORT_ENABLE_ALL)
+            ort.InferenceSession("x", sess_options=so_all)
+            assert calls[-1] == ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+
+            # A non-ALL level passes through unchanged
+            so_basic = FakeSessionOptions(ort.GraphOptimizationLevel.ORT_ENABLE_BASIC)
+            ort.InferenceSession("x", sess_options=so_basic)
+            assert calls[-1] == ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        finally:
+            ort.InferenceSession.__init__ = orig_init
+
+
+class TestMainValidatesBaselineAndArms:
+    def test_errors_when_baseline_not_among_models(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        gt_path = tmp_path / "benchmark_data" / "ground_truth.json"
+        gt_path.parent.mkdir(parents=True)
+        gt_path.write_text(
+            json.dumps(
+                {
+                    "pdfs": {
+                        "x": {
+                            "url": "u",
+                            "title": "X",
+                            "page_count": 1,
+                            "scenarios": {"1a": {"query": "q", "relevant_pages": [1]}},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "benchmark_embedding_models.py",
+                "--ground-truth",
+                str(gt_path),
+                "--models",
+                "snowflake/snowflake-arctic-embed-m",
+                # --baseline omitted: defaults to bge-small, not in --models
+            ],
+        )
+        bem._OUTPUT.clear()
+        with pytest.raises(SystemExit) as exc_info:
+            bem.main()
+        assert exc_info.value.code == 2
+
+    def test_errors_when_arms_matches_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        gt_path = tmp_path / "benchmark_data" / "ground_truth.json"
+        gt_path.parent.mkdir(parents=True)
+        gt_path.write_text(
+            json.dumps(
+                {
+                    "pdfs": {
+                        "x": {
+                            "url": "u",
+                            "title": "X",
+                            "page_count": 1,
+                            "scenarios": {
+                                "de01k": {
+                                    "query": "q",
+                                    "relevant_pages": [1],
+                                    "arm": "keyword_control",
+                                }
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "benchmark_embedding_models.py",
+                "--ground-truth",
+                str(gt_path),
+                "--models",
+                "BAAI/bge-small-en-v1.5",
+                "--arms",
+                "nonexistent_arm",
+            ],
+        )
+        bem._OUTPUT.clear()
+        with pytest.raises(SystemExit) as exc_info:
+            bem.main()
+        assert exc_info.value.code == 2
