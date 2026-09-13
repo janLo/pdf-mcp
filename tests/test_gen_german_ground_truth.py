@@ -124,6 +124,26 @@ class TestDeriveExtents:
         norms = ggt.derive_extents(toc, anchors)
         assert norms["1"].end_page == 26
 
+    def test_duplicate_number_winning_occurrence_out_of_toc_order(self):
+        # §5's *winning* (last) occurrence sits at TOC index 2, appearing
+        # AFTER §6 (index 1) in outline order but at an earlier page (52
+        # vs 55). Naive TOC-order "next entry" would make §6's next
+        # entry §5 (page 52 < 55), wrongly shrinking §6's extent. Sorting
+        # by page fixes this: §6's true next-by-page is §7 (page 60).
+        toc = [
+            [1, "§ 5\xa0Old", 50],
+            [1, "§ 6\xa0B", 55],
+            [1, "§ 5\xa0New", 52],  # duplicate: this occurrence wins
+            [1, "§ 7\xa0C", 60],
+        ]
+        anchors = ggt.parse_anchors(toc)
+        assert anchors["5"] == (52, "New")
+        norms = ggt.derive_extents(toc, anchors)
+        # §6's next-by-page is §7 (60): gap 5, capped at MAX_EXTENT_PAGES.
+        assert norms["6"].end_page == 56
+        # §5 (winning occurrence, page 52): next-by-page is §6 (55).
+        assert norms["5"].end_page == 53
+
 
 class TestValidateAnchor:
     def test_valid_when_citation_and_rubric_present(self):
@@ -151,6 +171,33 @@ class TestValidateAnchor:
         assert ggt.validate_anchor(norm, text, skips) is False
         assert skips.counts["rubric_not_on_own_page"] == 1
 
+    def test_rejects_prefix_collision_with_a_longer_number(self):
+        # A plain substring check would let "§ 9" pass on a page whose
+        # only citation is "§ 90" -- a different norm entirely.
+        norm = ggt.Norm(number="9", rubric="Test", start_page=1, end_page=1)
+        text = "§ 90 regelt etwas anderes. Test steht hier auch."
+        skips = ggt.SkipLog()
+        assert ggt.validate_anchor(norm, text, skips) is False
+        assert skips.counts["citation_not_on_own_page"] == 1
+
+    def test_rejects_prefix_collision_with_a_letter_suffixed_number(self):
+        # "§ 611" should not validate against a page whose only citation
+        # is "§ 611a" -- a different norm.
+        norm = ggt.Norm(number="611", rubric="Test", start_page=1, end_page=1)
+        text = "§ 611a regelt etwas anderes. Test steht hier auch."
+        skips = ggt.SkipLog()
+        assert ggt.validate_anchor(norm, text, skips) is False
+
+    def test_accepts_exact_number_not_followed_by_more_digits(self):
+        norm = ggt.Norm(number="9", rubric="Test", start_page=1, end_page=1)
+        text = "§ 9 Test regelt etwas."
+        assert ggt.validate_anchor(norm, text) is True
+
+    def test_accepts_letter_suffixed_number_exactly(self):
+        norm = ggt.Norm(number="611a", rubric="Test", start_page=1, end_page=1)
+        text = "§ 611a Test regelt etwas."
+        assert ggt.validate_anchor(norm, text) is True
+
 
 class TestHarvestReferrers:
     def test_finds_citation_on_other_page(self):
@@ -172,6 +219,42 @@ class TestHarvestReferrers:
         referrers = ggt.harvest_referrers(page_texts, anchors)
         assert referrers == {}
 
+    def test_skips_citation_to_a_different_statute(self):
+        # These would resolve against BGB § 109 by number alone, but the
+        # citation is actually to the Zivilprozessordnung (ZPO), a
+        # different code entirely.
+        page_texts = {5: "das folgt aus § 109 der Zivilprozessordnung"}
+        anchors = {"109": (1, "Test")}
+        skips = ggt.SkipLog()
+        referrers = ggt.harvest_referrers(page_texts, anchors, skips)
+        assert "109" not in referrers
+        assert skips.counts["external_statute_citation"] == 1
+
+    def test_skips_citation_with_absatz_before_external_statute_name(self):
+        page_texts = {
+            5: "gemäß § 25 Absatz 1 Satz 2 des Schwangerschaftskonfliktgesetzes"
+        }
+        anchors = {"25": (1, "Test")}
+        referrers = ggt.harvest_referrers(page_texts, anchors)
+        assert "25" not in referrers
+
+    def test_keeps_plain_bgb_citation_with_absatz(self):
+        page_texts = {5: "gemäß § 355 Absatz 1 des Bürgerlichen Gesetzbuchs"}
+        anchors = {"355": (1, "Test")}
+        # A spelled-out self-reference ("des Bürgerlichen Gesetzbuchs")
+        # is correctly KEPT: the statute-name check only matches the
+        # single capitalized word immediately after des/der ("Bürgerlichen",
+        # an adjective, matches neither -gesetz/-ordnung/-buch/...), so a
+        # two-word "Adjektiv Nomen" statute name doesn't false-positive.
+        referrers = ggt.harvest_referrers(page_texts, anchors)
+        assert "355" in referrers
+
+    def test_keeps_bare_citation_without_a_following_statute_name(self):
+        page_texts = {5: "gemäß § 355 kann der Verbraucher widerrufen"}
+        anchors = {"355": (1, "Test")}
+        referrers = ggt.harvest_referrers(page_texts, anchors)
+        assert "355" in referrers
+
 
 class TestExtractClause:
     def test_takes_last_sentence_before_citation(self):
@@ -189,6 +272,30 @@ class TestExtractClause:
         clause = ggt.extract_clause(text, idx)
         assert clause is not None
         assert len(clause.split()) <= ggt.CONTEXT_WINDOW_TOKENS
+
+    def test_does_not_split_after_abs_abbreviation(self):
+        # A plain (?<=[.!?])\s+ split would treat "Abs." as a sentence
+        # end, truncating the clause right before the citation.
+        text = "Der Mieter hat ein Widerrufsrecht gemäß Abs. 2 § 355."
+        idx = text.index("§ 355")
+        clause = ggt.extract_clause(text, idx)
+        assert clause is not None
+        assert "Widerrufsrecht" in clause
+
+    def test_does_not_split_after_nr_abbreviation(self):
+        text = "Es gilt die Ausnahme nach Nr. 3 § 611a."
+        idx = text.index("§ 611a")
+        clause = ggt.extract_clause(text, idx)
+        assert clause is not None
+        assert "Ausnahme" in clause
+
+    def test_still_splits_on_a_real_sentence_boundary(self):
+        text = "Erster Satz endet hier. Zweiter Satz nennt § 5."
+        idx = text.index("§ 5")
+        clause = ggt.extract_clause(text, idx)
+        assert clause is not None
+        assert "Erster Satz" not in clause
+        assert "Zweiter Satz" in clause
 
 
 class TestStripCitationTokens:
@@ -335,7 +442,12 @@ class TestBuildScenarios:
         assert "de01k" in scenarios
         assert "de01n" in scenarios
         assert scenarios["de01k"]["relevant_pages"] == [82]
-        assert scenarios["de01n"]["relevant_pages"] == [82]
+        # semantic_xref includes the referrer page: the query text is
+        # lifted verbatim from p.88, so a model retrieving p.88 is not
+        # wrong. target_pages keeps the norm-only page for stricter scoring.
+        assert scenarios["de01n"]["relevant_pages"] == [82, 88]
+        assert scenarios["de01n"]["target_pages"] == [82]
+        assert scenarios["de01n"]["referrer_page"] == 88
         assert scenarios["de01k"]["arm"] == "keyword_control"
         assert scenarios["de01n"]["arm"] == "semantic_xref"
         assert "§" not in scenarios["de01n"]["query"]
@@ -352,7 +464,10 @@ class TestBuildScenarios:
         assert skips.counts["no_referrer"] == 1
 
     def test_falls_back_to_keyword_only_when_referrer_too_close(self):
-        norms = {"1": ggt.Norm(number="1", rubric="X", start_page=10, end_page=10)}
+        # Referrer page falls INSIDE the norm's own 2-page extent
+        # (10..11) -- exactly what "too close" now means: tied to the
+        # norm's actual extent, not an arbitrary +/-1 buffer.
+        norms = {"1": ggt.Norm(number="1", rubric="X", start_page=10, end_page=11)}
         referrers = {"1": [ggt.Referrer(page=11, norm="1", char_start=0, char_end=5)]}
         skips = ggt.SkipLog()
         scenarios = ggt.build_scenarios(
@@ -360,6 +475,17 @@ class TestBuildScenarios:
         )
         assert list(scenarios.keys()) == ["de01k"]
         assert skips.counts["referrer_too_close"] == 1
+
+    def test_referrer_one_page_after_extent_is_not_too_close(self):
+        # A single-page norm's own extent is exactly [start_page]; a
+        # referrer the very next page is a legitimate candidate now (the
+        # old +/-1 buffer would have rejected it for no protective reason).
+        norms = {"1": ggt.Norm(number="1", rubric="X", start_page=10, end_page=10)}
+        referrers = {"1": [ggt.Referrer(page=11, norm="1", char_start=20, char_end=25)]}
+        page_texts = {11: "Ein einleitender Satz hier. " + "wort " * 8 + "§ 1"}
+        skips = ggt.SkipLog()
+        ggt.build_scenarios(["1"], norms, referrers, page_texts, seed=1, skips=skips)
+        assert "referrer_too_close" not in skips.counts
 
 
 class TestGroundTruthShapeCompatibility:

@@ -85,6 +85,16 @@ _ANCHOR_RE = re.compile(r"^§\s*(\d+[a-z]?)\s+(.+)$")
 _RANGE_RE = re.compile(r"^§§\s*\d+")
 # Any "§ N" citation in body text.
 _CITATION_RE = re.compile(r"§\s*(\d+[a-z]?)")
+# A "§ N" immediately followed (after any Absatz/Satz/Nr chain) by
+# "des/der <CapitalizedWord>...gesetz/-ordnung/-buch/-codes" cites a
+# DIFFERENT statute, not the BGB -- e.g. "§ 109 der Zivilprozessordnung",
+# "§ 25 Absatz 1 Satz 2 des Schwangerschaftskonfliktgesetzes". Resolving
+# such a citation against the BGB's own norm numbers would mislabel it.
+_EXTERNAL_STATUTE_RE = re.compile(
+    r"^\s*(?:(?:Abs(?:atz)?\.?|Satz|Nr\.?|Nummer)\s*\d+[a-z]?\s*)*"
+    r"(?:des|der)\s+[A-ZÄÖÜ][\wäöüß]*"
+    r"(?:gesetz\w*|ordnung\w*|buch\w*|codes?|konvention\w*)\b"
+)
 # Citation-adjacent tokens to strip from a natural-language query.
 _CITATION_TOKEN_RE = re.compile(
     r"§+\s*\d+[a-z]?"
@@ -136,6 +146,16 @@ _TRAILING_STOPWORDS = {
     "dass",
     "so",
 }
+
+# Sentence-boundary split for extract_clause(). A plain (?<=[.!?])\s+ treats
+# an abbreviation's period as a sentence end, truncating the clause right
+# before a citation like "...gemäß Abs. 2 § 355" -- exactly where German
+# legal text abbreviates. Negative lookbehinds guard the abbreviations this
+# module's own _CITATION_TOKEN_RE/_TRAILING_STOPWORDS already special-case
+# as citation-adjacent, plus a few other common German legal abbreviations.
+_SENTENCE_SPLIT_RE = re.compile(
+    r"(?<!Abs\.)(?<!Nr\.)(?<!Art\.)(?<!Var\.)(?<!bzw\.)(?<!ggf\.)(?<=[.!?])\s+"
+)
 
 QUESTION_FRAMES = [
     "Was gilt für {clause}?",
@@ -240,6 +260,15 @@ def derive_extents(
         if number in anchors and anchors[number][0] == page:
             norm_positions.append((number, int(page)))
 
+    # A duplicate norm number's *winning* (last) occurrence can sit at an
+    # earlier TOC position than another norm's own entry (e.g. §6 at index
+    # 1, §5's winning duplicate at index 2 after an earlier §5 was
+    # superseded) -- outline order and page order agree everywhere else,
+    # but not there. Sort by page (stable, so same-page entries keep their
+    # outline order) so "next" always means "next by page", not "next
+    # surviving TOC index".
+    norm_positions.sort(key=lambda np: np[1])
+
     norms: dict[str, Norm] = {}
     for i, (number, start_page) in enumerate(norm_positions):
         rubric = anchors[number][1]
@@ -258,7 +287,13 @@ def validate_anchor(norm: Norm, page_text: str, skips: SkipLog | None = None) ->
     """Confirm the norm's own citation and rubric both occur on its start page."""
     skips = skips or SkipLog()
     normalized = re.sub(r"\s+", " ", page_text.replace("\xa0", " "))
-    if f"§ {norm.number}" not in normalized and f"§{norm.number}" not in normalized:
+    # Word-boundary match: plain substring containment would let norm "9"
+    # pass on a page whose only citation is "§ 90", or norm "61" pass on
+    # a page whose only citation is "§ 611a" -- neither actually cites
+    # this norm. (?![0-9a-z]) rejects a match immediately followed by
+    # another digit or the start of a letter suffix.
+    citation_re = re.compile(r"§\s*" + re.escape(norm.number) + r"(?![0-9a-z])")
+    if not citation_re.search(normalized):
         skips.add("citation_not_on_own_page")
         return False
     first_word = norm.rubric.split()[0].rstrip(";,.") if norm.rubric.split() else ""
@@ -269,15 +304,28 @@ def validate_anchor(norm: Norm, page_text: str, skips: SkipLog | None = None) ->
 
 
 def harvest_referrers(
-    page_texts: dict[int, str], anchors: dict[str, tuple[int, str]]
+    page_texts: dict[int, str],
+    anchors: dict[str, tuple[int, str]],
+    skips: SkipLog | None = None,
 ) -> dict[str, list[Referrer]]:
-    """Find every `§ N` citation on a page other than N's own anchor page."""
+    """Find every `§ N` citation on a page other than N's own anchor page.
+
+    Skips a citation that is immediately followed by "des/der <a different
+    statute's name>" (e.g. "§ 109 der Zivilprozessordnung") -- the BGB
+    cites other codes constantly, and resolving that "§ N" against the
+    BGB's own norm numbers would mislabel the scenario.
+    """
+    skips = skips or SkipLog()
     referrers: dict[str, list[Referrer]] = {}
     for page, text in page_texts.items():
         for m in _CITATION_RE.finditer(text):
             number = m.group(1)
             anchor = anchors.get(number)
             if anchor is None or anchor[0] == page:
+                continue
+            lookahead = text[m.end() : m.end() + 80]
+            if _EXTERNAL_STATUTE_RE.match(lookahead):
+                skips.add("external_statute_citation")
                 continue
             referrers.setdefault(number, []).append(
                 Referrer(page=page, norm=number, char_start=m.start(), char_end=m.end())
@@ -292,7 +340,7 @@ def extract_clause(text: str, char_start: int) -> str | None:
     CONTEXT_WINDOW_TOKENS tokens so a very long lead-in doesn't dominate.
     """
     before = text[:char_start]
-    sentences = re.split(r"(?<=[.!?])\s+", before)
+    sentences = _SENTENCE_SPLIT_RE.split(before)
     clause = sentences[-1] if sentences else before
     tokens = clause.split()
     if len(tokens) > CONTEXT_WINDOW_TOKENS:
@@ -430,7 +478,14 @@ def build_scenarios(
             skips.add("no_referrer")
         else:
             ref = rng.choice(refs)
-            if abs(ref.page - norm.start_page) <= 1:
+            # Excluded window is exactly the norm's own (already-computed)
+            # extent, not an arbitrary +/-1 buffer independent of it -- a
+            # buffer that also excludes start_page-1 would throw away
+            # legitimate referrer candidates one page before a norm's own
+            # text even starts, for no protective reason; a wider extent
+            # (MAX_EXTENT_PAGES raised later) widens this exclusion too,
+            # automatically, since it reads norm.end_page directly.
+            if norm.start_page <= ref.page <= norm.end_page:
                 skips.add("referrer_too_close")
             else:
                 page_text = page_texts.get(ref.page, "")
@@ -471,9 +526,18 @@ def build_scenarios(
             "norm": number,
             "notes": f"auto-derived: § {number} rubric, keyword control arm",
         }
+        # The query text is lifted verbatim from ref.page, so a model that
+        # retrieves that page back is not wrong -- it found the sentence's
+        # own context. Excluding ref.page from "relevant" would punish
+        # exactly the retrieval a good German model should make. Include
+        # it explicitly and keep the norm-only pages separately so a
+        # reader can recompute the stricter scoring if they want it.
+        xref_relevant_pages = sorted(set(relevant_pages) | {ref.page})
         scenarios[f"{sid_base}n"] = {
             "query": natural_query,
-            "relevant_pages": relevant_pages,
+            "relevant_pages": xref_relevant_pages,
+            "target_pages": relevant_pages,
+            "referrer_page": ref.page,
             "k": 5,
             "arm": "semantic_xref",
             "norm": number,
@@ -517,7 +581,7 @@ def generate(
             for number, norm in norms.items()
             if validate_anchor(norm, page_texts.get(norm.start_page, ""), skips)
         }
-        referrers = harvest_referrers(page_texts, anchors)
+        referrers = harvest_referrers(page_texts, anchors, skips)
         eligible = sorted(number for number in validated if number in referrers)
         # A force-included norm may have no referrer anywhere in the body
         # (e.g. § 611a, cited by nothing else in the BGB) -- still let it
@@ -590,6 +654,15 @@ def main() -> None:
         default="benchmark_data/german_ground_truth_provenance.json",
         help="Provenance output path",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Overwrite the existing ground truth even if the source PDF's "
+            "sha256 has changed since it was generated (page numbers may "
+            "then be stale)"
+        ),
+    )
     args = parser.parse_args()
 
     if args.pdf:
@@ -623,14 +696,17 @@ def main() -> None:
                 prev_hash = prev_provenance.get("sha256")
             except (FileNotFoundError, json.JSONDecodeError):
                 pass
-        if prev_hash and prev_hash != provenance["sha256"]:
+        if prev_hash and prev_hash != provenance["sha256"] and not args.force:
             print(
-                f"WARNING: source PDF sha256 changed ({prev_hash} -> "
-                f"{provenance['sha256']}). The BGB was likely amended; "
-                "page numbers in the existing ground truth may now be "
-                "stale. Regenerating.",
+                f"ERROR: source PDF sha256 changed ({prev_hash} -> "
+                f"{provenance['sha256']}). The BGB was likely amended, "
+                "which shifts page numbers throughout -- regenerating would "
+                "silently invalidate every number measured against the "
+                f"committed ground truth. Refusing to overwrite {out_path}. "
+                "Pass --force to regenerate anyway.",
                 file=sys.stderr,
             )
+            sys.exit(1)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(gt_json, encoding="utf-8")

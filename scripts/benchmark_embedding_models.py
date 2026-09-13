@@ -26,6 +26,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -302,6 +303,11 @@ def run_model(
 
             # Latency probe on the first scenario of the first PDF that
             # actually has one (skips past any scenario-less entries).
+            if not first_query:
+                raise ValueError(
+                    "Ground truth has no scenarios at all (every PDF entry "
+                    "has an empty 'scenarios' dict) -- nothing to benchmark."
+                )
             first_pdf_key = next(iter(first_query))
             probe_query, probe_k = first_query[first_pdf_key]
             p50 = run_latency_probe(
@@ -579,11 +585,46 @@ def _filter_ground_truth_by_arm(gt: dict, arms: list[str] | None) -> dict:
         scenarios = {
             sid: s
             for sid, s in pdf["scenarios"].items()
-            if s.get("arm", sid) in arm_set or "arm" not in s
+            if "arm" not in s or s["arm"] in arm_set
         }
         if scenarios:
             filtered["pdfs"][pdf_key] = {**pdf, "scenarios": scenarios}
     return filtered
+
+
+def _patch_onnx_graph_optimization_level() -> None:
+    """Downgrade ORT_ENABLE_ALL to ORT_ENABLE_EXTENDED, process-wide.
+
+    fastembed's OnnxModel._load_onnx_model hardcodes
+    ort.GraphOptimizationLevel.ORT_ENABLE_ALL with no way to override it
+    per model. Some models' exported ONNX graphs fail a specific fusion
+    pass only at that level (verified for jina-embeddings-v2-base-de:
+    ORT_DISABLE_ALL / ORT_ENABLE_BASIC / ORT_ENABLE_EXTENDED all load and
+    embed correctly; only ORT_ENABLE_ALL raises
+    "SimplifiedLayerNormFusion ... itr != node_args.end()"). Monkeypatching
+    onnxruntime.InferenceSession.__init__ to downgrade just that one
+    level is the smallest intervention that doesn't touch fastembed's
+    installed package. Only affects this benchmark process (opt-in via
+    --patch-onnx-graph-opt), never pdf-mcp's own embedder.py.
+    """
+    import onnxruntime as ort
+
+    orig_init = ort.InferenceSession.__init__
+
+    def patched_init(
+        self: Any, path_or_bytes: Any, sess_options: Any = None, **kw: Any
+    ) -> None:
+        if (
+            sess_options is not None
+            and sess_options.graph_optimization_level
+            == ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        ):
+            sess_options.graph_optimization_level = (
+                ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+            )
+        orig_init(self, path_or_bytes, sess_options=sess_options, **kw)
+
+    ort.InferenceSession.__init__ = patched_init  # type: ignore[method-assign]
 
 
 def main() -> None:
@@ -624,7 +665,24 @@ def main() -> None:
             "'arm' key always run). Default: all scenarios."
         ),
     )
+    parser.add_argument(
+        "--patch-onnx-graph-opt",
+        action="store_true",
+        help=(
+            "Downgrade onnxruntime's graph optimization level from its "
+            "fastembed-hardcoded ORT_ENABLE_ALL to ORT_ENABLE_EXTENDED "
+            "for models whose exported ONNX graph a specific fusion pass "
+            "chokes on (e.g. jinaai/jina-embeddings-v2-base-de -- "
+            "SimplifiedLayerNormFusion fails to find a renamed node under "
+            "onnxruntime 1.24.4, but the model loads and embeds correctly "
+            "one optimization level down). No effect on models that "
+            "already load under ORT_ENABLE_ALL."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.patch_onnx_graph_opt:
+        _patch_onnx_graph_optimization_level()
 
     now = datetime.now()
     file_ts = now.strftime("%Y%m%d_%H%M%S")
@@ -636,6 +694,14 @@ def main() -> None:
     )
     baseline_name = args.baseline or BASELINE
     arms = [a.strip() for a in args.arms.split(",")] if args.arms else None
+
+    model_names_under_test = [m["name"] for m in models_under_test]
+    if baseline_name not in model_names_under_test:
+        parser.error(
+            f"baseline {baseline_name!r} is not among the models being run "
+            f"({', '.join(model_names_under_test)}). Pass --baseline "
+            "explicitly when using --models with a non-default baseline."
+        )
 
     _p(bold("\npdf-mcp Embedding-Model Live Benchmark"))
     _p("─" * 68)
@@ -651,6 +717,13 @@ def main() -> None:
 
     gt = load_ground_truth(args.ground_truth)
     gt = _filter_ground_truth_by_arm(gt, arms)
+    total_scenarios = sum(len(pdf["scenarios"]) for pdf in gt["pdfs"].values())
+    if total_scenarios == 0:
+        parser.error(
+            f"--arms {args.arms!r} matched zero scenarios in "
+            f"{args.ground_truth!r} -- check the arm name(s) against the "
+            "ground truth's 'arm' values (nothing to benchmark)."
+        )
 
     # Build scenario_k: prefer each scenario's own "k", else SCENARIO_K, else 5
     scenario_k: dict[str, int] = {}
