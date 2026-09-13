@@ -249,7 +249,11 @@ def run_model(
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             server_module.cache = PDFCache(cache_dir=Path(tmp), ttl_hours=1)
 
-            # Pre-resolve paths and warm embed cache per PDF (cold-time recorded)
+            # Pre-resolve paths and warm embed cache per PDF (cold-time recorded).
+            # A PDF with no scenarios yet (e.g. ground_truth.json entries
+            # reserved for a corpus not wired into this harness) is skipped
+            # here -- there's no query to warm with -- but its path is still
+            # resolved so any scenarios elsewhere referencing it still work.
             embed_ms: dict[str, float] = {}
             pdf_paths: dict[str, str] = {}
             first_query: dict[str, tuple[str, int]] = {}
@@ -258,6 +262,8 @@ def run_model(
                 if _err is not None:
                     raise RuntimeError(_err["error"])
                 pdf_paths[pdf_key] = _path
+                if not pdf["scenarios"]:
+                    continue
                 first_sid = next(iter(pdf["scenarios"]))
                 s = pdf["scenarios"][first_sid]
                 k = scenario_k[first_sid]
@@ -294,8 +300,9 @@ def run_model(
                         }
                     )
 
-            # Latency probe on the first scenario of the first PDF
-            first_pdf_key = next(iter(gt["pdfs"]))
+            # Latency probe on the first scenario of the first PDF that
+            # actually has one (skips past any scenario-less entries).
+            first_pdf_key = next(iter(first_query))
             probe_query, probe_k = first_query[first_pdf_key]
             p50 = run_latency_probe(
                 pdf_paths[first_pdf_key], probe_query, probe_k, mode=mode
