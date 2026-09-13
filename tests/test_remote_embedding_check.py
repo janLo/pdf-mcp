@@ -177,6 +177,7 @@ class TestVerifyRemoteBackendFallback:
         used = seen_specs[0]
         assert used.timeout < caller_spec.timeout
         assert used.max_concurrency == 1
+        assert used.max_attempts == 1  # PR #47 review item 3: fail fast
         assert used.base_url == caller_spec.base_url  # everything else preserved
         assert used.model == caller_spec.model
 

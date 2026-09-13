@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .embedder import DEFAULT_MODEL
-from .remote_embedder import RemoteSpec, identity_for
+from .remote_embedder import RemoteSpec
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -42,6 +42,16 @@ _DEFAULT_REMOTE_MAX_CONCURRENCY = 4
 # who sets one of these almost certainly wants the general behavior this
 # version deliberately does not provide.
 _UNSUPPORTED_REMOTE_KEYS = ("dimensions", "document_prefix", "query_prefix")
+
+# The startup cosine-parity safety check used to be optional
+# (`[embedding].verify_startup`). It is now mandatory -- a verified remote
+# endpoint writes to the SAME cache rows as local fastembed (see
+# `embedding_model`), so an unverified one could silently poison those rows
+# with vectors from a different model/quantization/pooling. Rejected
+# (ValueError) rather than silently ignored, same contract as
+# `_UNSUPPORTED_REMOTE_KEYS`: a config still setting this key needs to know
+# it no longer does anything.
+_REMOVED_REMOTE_KEYS = ("verify_startup",)
 
 
 class PDFConfig:
@@ -115,9 +125,9 @@ class PDFConfig:
         """``[embedding].backend``: "fastembed" (default) or "openai".
 
         "openai" means an OpenAI-compatible ``/v1/embeddings`` HTTP endpoint
-        (ollama, lemonade, llama-server, vLLM, OpenAI, ...) serving
-        bge-small-en-v1.5 -- see remote_embedding_spec's docstring for why
-        it is scoped to that one model in this version. Validated eagerly at
+        (ollama, lemonade, llama-server, vLLM, ...) serving bge-small-en-v1.5
+        on a self-hosted server -- see remote_embedding_spec's docstring for
+        why it is scoped to that one model in this version. Validated eagerly at
         load time -- this module never touches [embedding] lazily, matching
         the rest of this class.
 
@@ -142,33 +152,32 @@ class PDFConfig:
         page_embeddings/doc_profiles ``model`` column) and is passed to
         embedder.encode/encode_query/check_available.
 
-        fastembed backend (default): the bare model name, e.g.
-        "BAAI/bge-small-en-v1.5" -- byte-identical to every existing install,
-        so no cache is invalidated by this backend existing.
+        fastembed backend (`[embedding].backend` absent or "fastembed"):
+        `[embedding].model` if set, else `DEFAULT_MODEL` -- unchanged by
+        this backend's existence, so no cache is invalidated by it.
 
-        openai backend: 'openai:<host>[:<port>]/<model>' (see
-        remote_embedder.identity_for). Host/port are part of the identity
-        deliberately: a different endpoint may be a different vector space
-        even under the "same" model name (e.g. a different quantization),
-        so it must not share a cache row with another endpoint. `model` here
-        is informational/cache-naming only -- see remote_embedding_spec's
-        docstring for why it does not change encoding behavior in this
-        version.
-
-        After `disable_remote_embedding_backend` has been called, always
-        returns `DEFAULT_MODEL` -- NOT `[embedding].model` (that key, when
-        present, names the *remote* model label, which is meaningless to
-        fastembed's local catalog and would raise in `embedder.
-        check_available` if used here).
+        openai backend, and after `disable_remote_embedding_backend` has
+        been called on an openai config: always `DEFAULT_MODEL`, NEVER
+        `[embedding].model` (that key names the *remote* model label sent
+        to the endpoint -- see remote_embedding_spec's docstring -- and
+        would be meaningless to fastembed's local catalog if used here,
+        including in the disabled/fallback case, where it may not even name
+        a real fastembed model). The openai backend is scoped to serving
+        that exact model remotely and its mandatory startup safety check
+        (`remote_embedding_check`) proves the served vectors match local
+        fastembed's within 0.999 cosine before the backend is ever used --
+        so a verified remote endpoint shares the SAME cache rows as local
+        fastembed, rather than a namespaced, per-endpoint identity. That is
+        the point: a CPU fallback, a `127.0.0.1` vs `localhost` base_url, or
+        switching which remote box serves bge-small should all read the
+        same cached vectors instead of re-embedding everything.
         """
         if self._remote_backend_disabled:
             return DEFAULT_MODEL
         if self.embedding_backend == "fastembed":
             model: str = self._data.get("embedding", {}).get("model", DEFAULT_MODEL)
             return model
-        spec = self.remote_embedding_spec
-        assert spec is not None  # embedding_backend == "openai" guarantees this
-        return identity_for(spec)
+        return DEFAULT_MODEL
 
     @property
     def remote_embedding_spec(self) -> "RemoteSpec | None":
@@ -178,12 +187,13 @@ class PDFConfig:
         This version only ever talks to a remotely-served bge-small-en-v1.5
         -- the point is a Vulkan/iGPU speed win on hardware fastembed's
         onnxruntime backends can't reach, not arbitrary model choice (see
-        issue #42). `model` is accepted and forwarded to the endpoint (and
-        folded into the cache identity, see `embedding_model`) purely as a
-        label; nothing in this codebase branches on its value the way it
-        would need to for a different model's prefix contract or cosine
-        distribution (that generality, and the low_confidence/RRF threshold
-        recalibration it requires, is tracked separately in issue #46).
+        issue #42). `model` is accepted and forwarded to the endpoint purely
+        as a label naming what it should load -- see `embedding_model`'s
+        docstring for why it is NOT folded into the cache identity; nothing
+        in this codebase branches on its value the way it would need to for
+        a different model's prefix contract or cosine distribution (that
+        generality, and the low_confidence/RRF threshold recalibration it
+        requires, is tracked separately in issue #46).
 
         `document_prefix`, `query_prefix`, and `dimensions` are therefore
         deliberately unsupported keys here -- see `_UNSUPPORTED_REMOTE_KEYS`
@@ -208,6 +218,16 @@ class PDFConfig:
                 "no prefix or dimension configuration surface. See "
                 "https://github.com/jztan/pdf-mcp/issues/46 for the tracked "
                 "general-model-choice follow-up."
+            )
+
+        present_removed = [k for k in _REMOVED_REMOTE_KEYS if k in section]
+        if present_removed:
+            raise ValueError(
+                "[embedding]." + ", [embedding].".join(present_removed) + " "
+                "no longer has any effect -- the startup cosine-parity "
+                "safety check is now mandatory for [embedding].backend = "
+                "'openai', since a verified endpoint shares cache rows "
+                "with local fastembed. Remove it from config.toml."
             )
 
         base_url = section.get("base_url")
@@ -285,32 +305,6 @@ class PDFConfig:
             batch_size=batch_size,
             max_concurrency=max_concurrency,
         )
-
-    @property
-    def remote_embedding_verify_startup(self) -> bool:
-        """``[embedding].verify_startup``: default True.
-
-        Gates the cosine-parity safety check (`remote_embedding_check`,
-        issue #42) that runs once at startup when the "openai" backend is
-        configured: it embeds a handful of fixed reference sentences
-        through the remote endpoint and compares them to stored local
-        fastembed vectors, falling back to local fastembed if they don't
-        match closely enough. True by default -- the check is what makes
-        the remote backend trustworthy without pdf-mcp being able to see
-        what model the endpoint actually serves. Set to false only for an
-        endpoint whose identity is already verified out-of-band and where
-        the extra startup round-trip is unwanted (e.g. a very slow cold
-        start some servers have on the first request).
-
-        Only read when `[embedding].backend = "openai"`; meaningless (and
-        not read) for the default fastembed backend.
-        """
-        value = self._data.get("embedding", {}).get("verify_startup", True)
-        if not isinstance(value, bool):
-            raise ValueError(
-                f"[embedding].verify_startup must be true or false, got " f"{value!r}"
-            )
-        return value
 
     @property
     def ocr_auto_install(self) -> bool | None:

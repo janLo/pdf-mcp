@@ -161,11 +161,11 @@ ran as fast as fourteen, so the encode is memory-bound, not compute-bound.
 ### Remote-served bge-small (`[embedding].backend = "openai"`)
 
 Optional and off by default (`fastembed`, the bundled local path). Points
-semantic search at an OpenAI-compatible `POST /v1/embeddings` HTTP endpoint
-instead of onnxruntime — useful when a server on your network (ollama,
-lemonade, llama-server, vLLM, a hosted provider) can reach a faster compute
-backend than the ones fastembed's onnxruntime wheels support on your
-machine (for example a Vulkan iGPU path on some AMD hardware).
+semantic search at a self-hosted, OpenAI-compatible `POST /v1/embeddings`
+HTTP endpoint instead of onnxruntime — useful when a server on your network
+(ollama, lemonade, llama-server, vLLM) can reach a faster compute backend
+than the ones fastembed's onnxruntime wheels support on your machine (for
+example a Vulkan iGPU path on some AMD hardware).
 
 **This is deliberately narrow: the remote endpoint must serve
 `BAAI/bge-small-en-v1.5`** — the same model fastembed uses by default —
@@ -191,15 +191,14 @@ depending on concurrency
 backend = "openai"
 base_url = "http://localhost:8000/v1"
 model = "bge-small-en-v1.5"       # informational: names the model your
-                                  # server should load, and namespaces the
-                                  # vector cache; does not change how text
-                                  # is encoded (see below)
+                                  # server should load; does not change how
+                                  # text is encoded (see below) and is not
+                                  # part of the vector-cache identity
 api_key_env = "MY_EMBED_API_KEY"  # optional; names an env var, never a
                                   # literal key in config.toml
 timeout = 60                      # seconds, per request (default 60)
 batch_size = 32                   # texts per request (default 32)
 max_concurrency = 4               # concurrent in-flight requests (default 4)
-verify_startup = true             # cosine-parity safety check (default true)
 ```
 
 `base_url` and `model` are required whenever `backend = "openai"`. Every
@@ -212,13 +211,17 @@ neither. Setting `document_prefix`, `query_prefix`, or `dimensions` under
 ignored, since a config that needs one of them wants the general-model-
 choice feature this version does not provide.
 
-The vector cache is namespaced by endpoint and model
-(`openai:<host>[:<port>]/<model>`), so pointing at a different server, port,
-or model string re-embeds rather than silently reusing another endpoint's
-vectors — a different endpoint can be a different vector space even under
-the "same" model name (a different quantization, for instance). The
-`api_key`, if any, and any credentials embedded in `base_url`, are never
-written into this identity string, a log line, or an exception message.
+**The vector cache is shared with local fastembed, not namespaced per
+endpoint.** `embedding_model` (the identity that keys `page_embeddings`/
+`doc_profiles` rows) is always the bare `BAAI/bge-small-en-v1.5` name,
+regardless of backend — a verified remote endpoint proves it returns the
+same vectors (see the mandatory startup check below), so a CPU fallback, a
+different `base_url`, or `127.0.0.1` vs `localhost` all read the same
+cached rows instead of re-embedding everything. This is exactly why the
+startup check below is mandatory rather than optional: an unverified
+endpoint would silently write mismatched vectors into rows local fastembed
+also reads. The `api_key`, if any, and any credentials embedded in
+`base_url`, are never written into a log line or an exception message.
 
 A non-loopback `base_url` sends page and query text over the network to
 that host — the same privacy consideration as any other outbound request
@@ -230,20 +233,24 @@ responsibility to point this at a server you trust.
 only) once the endpoint is configured and `embedding_model` resolves
 successfully.
 
-**Startup safety check.** pdf-mcp cannot see which model actually sits
-behind `base_url` — a misconfigured endpoint could silently serve a
-different model, quantization, or pooling strategy, each of which shifts
-the cosine-similarity distribution `low_confidence`/RRF fusion are tuned
-against. So, once at startup (before the first real request, and before
-`embedder.configure_remote` is called), pdf-mcp embeds a handful of fixed
-reference sentences through the configured endpoint and compares each
+**Startup safety check (mandatory).** pdf-mcp cannot see which model
+actually sits behind `base_url` — a misconfigured endpoint could silently
+serve a different model, quantization, or pooling strategy, each of which
+shifts the cosine-similarity distribution `low_confidence`/RRF fusion are
+tuned against, and which the shared cache above would otherwise let leak
+straight into local fastembed's own rows. So, once at startup (before the
+first real request, and before `embedder.configure_remote` is called),
+pdf-mcp embeds a handful of fixed reference sentences through the
+configured endpoint (a single request, one attempt — it fails fast on an
+unreachable endpoint rather than blocking startup) and compares each
 vector to a stored local-fastembed `bge-small-en-v1.5` reference by cosine
 similarity (`src/pdf_mcp/remote_embedding_check.py`). If the *minimum*
-per-sentence cosine drops below `0.99`, the server logs a warning and falls
-back to the local fastembed backend for the rest of the process — it never
-crashes and never silently serves vectors from the wrong space. Set
-`verify_startup = false` to skip this one-time round-trip for an endpoint
-you have already verified out-of-band.
+per-sentence cosine drops below `0.999`, the server logs a warning and
+falls back to the local fastembed backend for the rest of the process — it
+never crashes and never silently serves vectors from the wrong space. This
+check cannot be turned off: since a verified endpoint's vectors and local
+fastembed's share the same cache rows, an unverified endpoint would corrupt
+that shared cache rather than just its own.
 
 ### Docker deployment notes
 

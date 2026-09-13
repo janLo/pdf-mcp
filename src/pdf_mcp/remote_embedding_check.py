@@ -19,6 +19,15 @@ embed a few fixed sentences, compare them against stored fastembed bge-small
 reference vectors, and fall back to CPU with a warning if cosine drops below
 ~0.99."
 
+This check is now MANDATORY (not gated by a config flag) and its threshold
+is raised to 0.999: a verified remote endpoint shares the same vector-cache
+rows as local fastembed (see PDFConfig.embedding_model's docstring) rather
+than a namespaced identity, so there is no longer a separate cache to
+isolate a mismatch to -- an unverified endpoint would poison the SAME rows
+local fastembed reads. 0.999 is still comfortably under the measured
+0.99989 minimum cosine on real page-chunk passages against a quantized
+GGUF (`benchmark_data/bge_small_cosine_parity_results.md`).
+
 Aggregate rule: the MINIMUM per-sentence cosine must clear the threshold, not
 just the mean -- a wrong-model/wrong-quantization endpoint could still land
 close to fastembed's vectors on some sentences by chance while diverging
@@ -27,8 +36,7 @@ that in the average. The reference sentences are short (well within any
 model's context window) specifically so this check isolates model/
 quantization/pooling mismatches; it is NOT a context-window check --
 `benchmark_data/bge_small_cosine_parity_results.md` covers real long-chunk
-behavior separately. Threshold default 0.99, matching the issue's own
-number.
+behavior separately.
 
 Called once at server startup (server.py) right before
 ``embedder.configure_remote``. Never raises for a reachability/format
@@ -48,9 +56,11 @@ from .remote_embedder import RemoteSpec
 
 REFERENCE_PATH = Path(__file__).with_name("bge_small_reference.json")
 
-# jztan's number (issue #42): "fall back to CPU with a warning if cosine
-# drops below ~0.99".
-DEFAULT_THRESHOLD = 0.99
+# Raised from the issue's original 0.99 to 0.999 once the check became
+# mandatory and cache rows are shared with local fastembed (see module
+# docstring) -- still comfortably under the measured 0.99989 minimum
+# cosine on real page-chunk passages against a quantized GGUF.
+DEFAULT_THRESHOLD = 0.999
 
 # The check embeds 8 short sentences, once, at startup -- it should fail
 # fast on an unreachable endpoint rather than inherit the bulk-embedding
@@ -113,12 +123,13 @@ def verify_remote_backend(
     exception text as `reason` -- see the module docstring for why this
     never raises; a startup check must never be able to crash the server.
 
-    Runs against a short-timeout, single-batch, no-concurrency copy of
-    `spec` (see `_CHECK_TIMEOUT_SECONDS`) regardless of the caller's own
-    `spec.timeout`/`batch_size`/`max_concurrency` -- this is 8 short
-    sentences, not a bulk warm, and should fail fast on an unreachable
-    endpoint rather than inherit `remote_embedder`'s multi-attempt retry
-    budget (which could otherwise block server startup for minutes).
+    Runs against a short-timeout, single-batch, single-attempt,
+    no-concurrency copy of `spec` (see `_CHECK_TIMEOUT_SECONDS`) regardless
+    of the caller's own `spec.timeout`/`batch_size`/`max_concurrency`/
+    `max_attempts` -- this is 8 short sentences, not a bulk warm, and must
+    fail fast on an unreachable endpoint: jztan measured 16.9s of blocked
+    startup on every server spawn when this inherited the bulk-embedding
+    3-attempt retry budget, against a 5s worst case with one attempt.
     """
     import numpy as np
 
@@ -136,6 +147,7 @@ def verify_remote_backend(
             timeout=_CHECK_TIMEOUT_SECONDS,
             batch_size=len(sentences),
             max_concurrency=1,
+            max_attempts=1,
         )
         remote_vecs = encode_fn(sentences, check_spec)
     except Exception as exc:  # noqa: BLE001 - reported, never propagated

@@ -233,15 +233,19 @@ url_fetcher = URLFetcher(cache_dir=cache.cache_dir / "downloads", config=pdf_con
 from . import embedder as _embedder_startup  # noqa: E402
 
 _remote_spec_startup = pdf_config.remote_embedding_spec
-if _remote_spec_startup is not None and pdf_config.remote_embedding_verify_startup:
+if _remote_spec_startup is not None:
     # Startup safety check (issue #42): pdf-mcp cannot see which model an
     # OpenAI-compatible endpoint actually serves, so verify it against
     # stored local-fastembed reference vectors before trusting it for real
-    # search traffic. A cosine mismatch (wrong model, wrong quantization,
-    # wrong pooling, or the endpoint being unreachable) falls back to the
-    # local fastembed backend with a warning -- the server must still
-    # start and serve correct (if slower) vectors, never crash and never
-    # silently serve vectors from the wrong space.
+    # search traffic. Mandatory, not config-gated: a verified endpoint
+    # shares the SAME vector-cache rows as local fastembed (see
+    # PDFConfig.embedding_model's docstring), so an unverified one could
+    # silently poison those rows rather than just its own namespace. A
+    # cosine mismatch (wrong model, wrong quantization, wrong pooling, or
+    # the endpoint being unreachable) falls back to the local fastembed
+    # backend with a warning -- the server must still start and serve
+    # correct (if slower) vectors, never crash and never silently serve
+    # vectors from the wrong space.
     from . import remote_embedding_check as _remote_check_startup
     from .remote_embedder import _redact_base_url as _redact_base_url_startup
 
@@ -3047,7 +3051,18 @@ def pdf_search(
                         pn: page_embedding_units(non_empty[pn]) for pn in sorted_nums
                     }
                     flat = [c for pn in sorted_nums for c in per_page[pn]]
-                    vecs: Any = _embedder.encode(flat, _model_name) if flat else []
+                    try:
+                        vecs: Any = _embedder.encode(flat, _model_name) if flat else []
+                    except Exception as exc:
+                        # A remote backend can die mid-session (issue #47
+                        # review item 4) -- surface it the same way every
+                        # other tool failure does, an inline {"error": ...},
+                        # rather than letting RemoteEmbeddingError propagate
+                        # as an uncaught exception.
+                        return {
+                            "error": f"embedding model load/encode failed: {exc}",
+                            "query": query,
+                        }
                     raw_new = {}
                     cursor = 0
                     for pn in sorted_nums:
@@ -3075,7 +3090,13 @@ def pdf_search(
                     "hidden_text_detected": False,
                 }
 
-            query_vec: Any = _embedder.encode_query(query, _model_name)
+            try:
+                query_vec: Any = _embedder.encode_query(query, _model_name)
+            except Exception as exc:
+                return {
+                    "error": f"embedding model load/encode failed: {exc}",
+                    "query": query,
+                }
             page_nums_list = sorted(cached_embeddings.keys())
             # Page score is its best chunk. Averaging would re-introduce the
             # page-level dilution this change exists to remove.
@@ -4512,7 +4533,16 @@ def pdf_corpus_search(
     # ── mode="semantic" ───────────────────────────────────────────────
     if mode == "semantic":
         assert embed_model is not None  # guaranteed by check_available above
-        query_vec = _embedder.encode_query(query, embed_model)
+        try:
+            query_vec = _embedder.encode_query(query, embed_model)
+        except Exception as exc:
+            # A remote backend can die mid-session (issue #47 review item
+            # 4) -- surface it the same way every other tool failure does,
+            # an inline {"error": ...}, rather than an uncaught exception.
+            return {
+                "error": f"embedding model load/encode failed: {exc}",
+                "query": query,
+            }
         best_chunks: dict[tuple[str, int], str] = {}
         scored, semantic_unprocessed = _corpus_semantic_scores(
             ready_paths, embed_model, query_vec, best_chunks
@@ -4615,6 +4645,21 @@ def pdf_corpus_search(
             len(kw_doc_match_counts), window_tokens
         )
 
+    # mode="semantic" already returned above, so only "keyword"/"auto"
+    # reach here. For "auto" with embeddings available, encode the query
+    # now (before deciding whether we can do hybrid fusion below) so a
+    # remote backend dying mid-session (issue #47 review item 4) demotes
+    # this call to the keyword-only response right below -- the same
+    # semantic_unavailable/semantic_unavailable_reason path used when
+    # fastembed itself was never available -- instead of raising.
+    query_vec = None
+    if embeddings_needed:
+        try:
+            query_vec = _embedder.encode_query(query, embed_model)
+        except Exception as exc:
+            embeddings_needed = False
+            semantic_unavailable_reason = f"embedding model load/encode failed: {exc}"
+
     if mode == "keyword" or not embeddings_needed:
 
         def _kw_build(path: str, page: int, idx: int) -> dict[str, Any]:
@@ -4679,7 +4724,9 @@ def pdf_corpus_search(
         # branch is unreachable on the request path and exists so mypy
         # can narrow embed_fn to non-None without an assert here.
         raise RuntimeError("embed_fn unset despite embeddings_needed")
-    query_vec = _embedder.encode_query(query, embed_model)
+    # query_vec was already encoded above (before the keyword-only branch),
+    # so a failed encode has already demoted this call to that branch.
+    assert query_vec is not None  # embeddings_needed guarantees it was set
     hybrid_best_chunks: dict[tuple[str, int], str] = {}
     scored, semantic_unprocessed = _corpus_semantic_scores(
         ready_paths, embed_model, query_vec, hybrid_best_chunks

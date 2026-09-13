@@ -1,11 +1,12 @@
 """
-HTTP client for an OpenAI-compatible ``POST /v1/embeddings`` endpoint.
+HTTP client for a self-hosted, OpenAI-compatible ``POST /v1/embeddings``
+endpoint.
 
-Covers ollama, lemonade, bare ``llama-server``, vLLM, and hosted providers
-(OpenRouter, OpenAI) with one implementation, since they all speak the same
-request/response schema. This module is intentionally the only place that
-touches the network for embeddings; ``embedder.py`` owns dispatch and
-normalization, ``config.py`` owns parsing ``[embedding]`` into a `RemoteSpec`.
+Covers ollama, lemonade, bare ``llama-server``, and vLLM with one
+implementation, since they all speak the same request/response schema. This
+module is intentionally the only place that touches the network for
+embeddings; ``embedder.py`` owns dispatch and normalization, ``config.py``
+owns parsing ``[embedding]`` into a `RemoteSpec`.
 
 Scope (see issue #42 and issue #46): this client only ever serves
 BAAI/bge-small-en-v1.5 remotely -- the point is a Vulkan/iGPU speed win on
@@ -37,11 +38,15 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import numpy as np
 
-# Attempts per batch: 1 initial + up to 2 retries. A prewarm run is thousands
-# of requests against a server that may be a personal machine (rate limits,
-# a cold model load, a GPU busy with something else) -- worth more resilience
-# than url_fetcher.py's single bare retry (that one guards against one
-# transient download corruption, not a sustained multi-minute run).
+# Default attempts per batch: 1 initial + up to 2 retries. A prewarm run is
+# thousands of requests against a server that may be a personal machine
+# (rate limits, a cold model load, a GPU busy with something else) -- worth
+# more resilience than url_fetcher.py's single bare retry (that one guards
+# against one transient download corruption, not a sustained multi-minute
+# run). `RemoteSpec.max_attempts` lets a caller override this -- see its
+# docstring and remote_embedding_check.py, which wants exactly one attempt
+# so an unreachable endpoint fails fast at startup instead of inheriting
+# this budget.
 MAX_ATTEMPTS = 3
 _RETRY_BASE_DELAY = 0.5  # seconds, doubled each attempt, plus jitter
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -61,11 +66,17 @@ class RemoteSpec:
     the header-only use in `_headers`.
 
     ``model`` is informational only -- it names which model the remote
-    server should load and is folded into the cache identity (see
-    `identity_for`), but nothing in this module or in embedder.py branches
-    on its value. There is deliberately no `dimensions`, `document_prefix`,
-    or `query_prefix` field: this version only ever talks to bge-small-en-
-    v1.5, which needs none of them. See the module docstring and issue #46.
+    server should load, but nothing in this module or in embedder.py
+    branches on its value, and it is NOT folded into the vector-cache
+    identity (see PDFConfig.embedding_model's docstring: a verified remote
+    endpoint deliberately shares cache rows with local fastembed). There is
+    deliberately no `dimensions`, `document_prefix`, or `query_prefix`
+    field: this version only ever talks to bge-small-en-v1.5, which needs
+    none of them. See the module docstring and issue #46.
+
+    ``max_attempts`` overrides `MAX_ATTEMPTS` for this spec -- used by
+    remote_embedding_check.py to make exactly one attempt at startup rather
+    than inheriting the bulk-embedding retry budget.
     """
 
     base_url: str
@@ -74,29 +85,7 @@ class RemoteSpec:
     timeout: float = 60.0
     batch_size: int = 32
     max_concurrency: int = 4
-
-
-def identity_for(spec: RemoteSpec) -> str:
-    """The cache-identity string for `spec`: 'openai:<host>[:<port>]/<model>'.
-
-    Pure function of `spec` (no I/O), so both PDFConfig.embedding_model and
-    any future `--model` override can share it rather than reimplementing
-    the same string.
-
-    Host/port are part of the identity deliberately -- see
-    PDFConfig.embedding_model's docstring for the full rationale (a
-    different endpoint may be a different vector space even for the "same"
-    model name, so it must not share a cache row). The API key is
-    intentionally excluded, and so is any userinfo (user:pass@) a base_url
-    might embed -- this identity string is stored in the cache DB, so it
-    must be as credential-free as an error message (see
-    `_redact_base_url`).
-    """
-    parts = urlsplit(spec.base_url)
-    host = parts.hostname or spec.base_url
-    if parts.port:
-        host = f"{host}:{parts.port}"
-    return f"openai:{host}/{spec.model}"
+    max_attempts: int = MAX_ATTEMPTS
 
 
 def _redact_base_url(base_url: str) -> str:
@@ -121,16 +110,25 @@ def _endpoint_url(base_url: str) -> str:
 
 
 def _post_with_retry(
-    client: httpx.Client, url: str, payload: dict[str, Any], headers: dict[str, str]
+    client: httpx.Client,
+    url: str,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    max_attempts: int = MAX_ATTEMPTS,
 ) -> dict[str, Any]:
     """POST with retry on connect errors, timeouts, 429 and 5xx.
+
+    `max_attempts` defaults to the bulk-embedding budget (`MAX_ATTEMPTS`)
+    but is overridden per-spec (`RemoteSpec.max_attempts`) -- e.g.
+    remote_embedding_check.py wants exactly 1, so a startup check fails
+    fast on an unreachable endpoint instead of blocking for minutes.
 
     Never includes the Authorization header's value in a raised message --
     only the redacted URL and the response body/status, so a leaked
     exception (logs, an MCP error payload) cannot carry the API key.
     """
     last_exc: "Exception | None" = None
-    for attempt in range(MAX_ATTEMPTS):
+    for attempt in range(max_attempts):
         try:
             resp = client.post(url, json=payload, headers=headers)
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
@@ -148,18 +146,18 @@ def _post_with_retry(
                 f"HTTP {resp.status_code}: {resp.text[:500]}"
             )
             retry_after = resp.headers.get("Retry-After")
-            if retry_after is not None and attempt < MAX_ATTEMPTS - 1:
+            if retry_after is not None and attempt < max_attempts - 1:
                 try:
                     time.sleep(max(0.0, float(retry_after)))
                     continue
                 except ValueError:
                     pass  # not a numeric seconds value; fall through to backoff
-        if attempt < MAX_ATTEMPTS - 1:
+        if attempt < max_attempts - 1:
             delay = _RETRY_BASE_DELAY * (2**attempt) + random.uniform(0, 0.25)
             time.sleep(delay)
     raise RemoteEmbeddingError(
         f"embedding request to {_redact_base_url(url)} failed after "
-        f"{MAX_ATTEMPTS} attempts: {last_exc!r}"
+        f"{max_attempts} attempts: {last_exc!r}"
     )
 
 
@@ -186,7 +184,11 @@ def _embed_batch(
         "encoding_format": "float",
     }
     body = _post_with_retry(
-        client, _endpoint_url(spec.base_url), payload, _headers(spec)
+        client,
+        _endpoint_url(spec.base_url),
+        payload,
+        _headers(spec),
+        max_attempts=spec.max_attempts,
     )
     data = body.get("data")
     if not isinstance(data, list):

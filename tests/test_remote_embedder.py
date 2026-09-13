@@ -27,7 +27,6 @@ from pdf_mcp.remote_embedder import (
     RemoteSpec,
     _redact_base_url,
     encode,
-    identity_for,
 )
 
 
@@ -56,25 +55,6 @@ def _fake_vec(text: str, dim: int = 3) -> list[float]:
     """A deterministic, distinguishable vector for a given input text."""
     h = sum(text.encode("utf-8"))
     return [float((h + i) % 97) for i in range(dim)]
-
-
-class TestIdentityFor:
-    def test_bare_host(self):
-        spec = _spec(base_url="http://localhost:11434/v1")
-        assert identity_for(spec) == "openai:localhost:11434/bge-small-en-v1.5"
-
-    def test_different_host_differs(self):
-        a = identity_for(_spec(base_url="http://host-a:11434/v1"))
-        b = identity_for(_spec(base_url="http://host-b:11434/v1"))
-        assert a != b
-
-    def test_different_model_differs(self):
-        a = identity_for(_spec(model="bge-small-en-v1.5"))
-        b = identity_for(_spec(model="bge-small-en-v1.5-q8"))
-        assert a != b
-
-    def test_stable_for_same_spec(self):
-        assert identity_for(_spec()) == identity_for(_spec())
 
 
 class TestRedactBaseUrl:
@@ -289,6 +269,19 @@ class TestRetries:
             with pytest.raises(RemoteEmbeddingError, match="failed after 3 attempts"):
                 encode(["a"], _spec(batch_size=32, max_concurrency=1))
         assert client.post.call_count == 3
+
+    def test_max_attempts_override_makes_a_single_try(self, monkeypatch):
+        """remote_embedding_check.py sets max_attempts=1 so a startup check
+        against an unreachable endpoint fails fast (PR #47 review item 3)
+        instead of inheriting the 3-attempt bulk-embedding budget."""
+        monkeypatch.setattr("pdf_mcp.remote_embedder.time.sleep", lambda s: None)
+        with patch("httpx.Client") as mock_client:
+            client = mock_client.return_value.__enter__.return_value
+            client.post.side_effect = httpx.ConnectError("refused")
+            spec = _spec(batch_size=32, max_concurrency=1, max_attempts=1)
+            with pytest.raises(RemoteEmbeddingError, match="failed after 1 attempts"):
+                encode(["a"], spec)
+        assert client.post.call_count == 1
 
 
 class TestAuthAndSecrecy:

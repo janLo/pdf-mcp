@@ -10,37 +10,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Remote-served bge-small embedding backend.** `[embedding].backend =
-  "openai"` points semantic search at any OpenAI-compatible
+  "openai"` points semantic search at a self-hosted, OpenAI-compatible
   `/v1/embeddings` HTTP endpoint (ollama, lemonade, llama-server, vLLM,
-  OpenAI, ...) instead of the bundled fastembed/onnxruntime path. This is
-  scoped narrowly and deliberately to serving BAAI/bge-small-en-v1.5
-  remotely -- the same model fastembed uses by default -- since the
-  win being targeted is compute backend (e.g. a Vulkan iGPU path
-  onnxruntime can't reach on some hardware), not a different model. It is
-  not a general "bring your own embedding model" feature: `low_confidence`
-  and the hybrid RRF fusion score are tuned to bge-small's cosine
-  distribution, and a different model's distribution would silently throw
-  them off with no error, so arbitrary model choice is being handled
-  separately (see
+  ...) instead of the bundled fastembed/onnxruntime path. This is scoped
+  narrowly and deliberately to serving BAAI/bge-small-en-v1.5 remotely --
+  the same model fastembed uses by default -- since the win being targeted
+  is compute backend (e.g. a Vulkan iGPU path onnxruntime can't reach on
+  some hardware), not a different model. It is not a general "bring your
+  own embedding model" feature: `low_confidence` and the hybrid RRF fusion
+  score are tuned to bge-small's cosine distribution, and a different
+  model's distribution would silently throw them off with no error, so
+  arbitrary model choice is being handled separately (see
   [issue #46](https://github.com/jztan/pdf-mcp/issues/46)) alongside the
-  safety check that will guard against it. Configure with `base_url`
-  (required), `model` (required; informational/cache-naming only in this
-  version -- it does not change how text is encoded), `api_key_env`,
-  `timeout`, `batch_size`, and `max_concurrency`; `server_info` reports
-  `embedding_backend` and `embedding_endpoint` (host:port only, never a
-  credential) once the backend loads successfully. See
-  `docs/configuration.md` for the full key reference.
+  safety check that guards against it. Configure with `base_url`
+  (required), `model` (required; informational only in this version -- it
+  does not change how text is encoded and is not part of the vector-cache
+  identity), `api_key_env`, `timeout`, `batch_size`, and
+  `max_concurrency`; `server_info` reports `embedding_backend` and
+  `embedding_endpoint` (host:port only, never a credential) once the
+  backend loads successfully. See `docs/configuration.md` for the full key
+  reference.
 
-  A startup safety check (`src/pdf_mcp/remote_embedding_check.py`) now
-  guards this: pdf-mcp cannot see which model actually sits behind
-  `base_url`, so once at startup it embeds a handful of fixed reference
-  sentences through the configured endpoint and compares them by cosine
-  similarity to stored local-fastembed bge-small reference vectors
-  (`src/pdf_mcp/bge_small_reference.json`). If the minimum per-sentence
-  cosine drops below 0.99, the server logs a warning and falls back to
-  local fastembed for the rest of the process instead of silently serving
-  vectors from the wrong space. Opt out with `[embedding].verify_startup =
-  false`.
+  A verified remote endpoint shares the SAME vector-cache rows as local
+  fastembed -- `embedding_model` is always the bare `BAAI/bge-small-en-v1.5`
+  name regardless of backend -- so a CPU fallback, a different `base_url`,
+  or `127.0.0.1` vs `localhost` all read the same cached vectors instead of
+  re-embedding everything. That is what makes the startup safety check
+  (`src/pdf_mcp/remote_embedding_check.py`) mandatory rather than optional:
+  pdf-mcp cannot see which model actually sits behind `base_url`, so once
+  at startup (a single request, one attempt -- it fails fast on an
+  unreachable endpoint rather than blocking startup) it embeds a handful of
+  fixed reference sentences through the configured endpoint and compares
+  them by cosine similarity to stored local-fastembed bge-small reference
+  vectors (`src/pdf_mcp/bge_small_reference.json`). If the minimum
+  per-sentence cosine drops below 0.999, the server logs a warning and
+  falls back to local fastembed for the rest of the process instead of
+  silently serving mismatched vectors into that shared cache. If the
+  endpoint instead dies mid-session, `pdf_search`/`pdf_corpus_search`
+  return an inline `{"error": ...}` (or degrade to keyword-only under
+  `mode="auto"`) rather than raising.
 
   Measured against a real quantized deployment (Q8_0 GGUF over
   `llama-server` on Vulkan): cosine parity against local fastembed is

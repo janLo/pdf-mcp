@@ -423,14 +423,33 @@ class TestEmbeddingBackend:
         with pytest.raises(ValueError, match="batch_size"):
             config.remote_embedding_spec
 
-    def test_embedding_model_for_openai_backend_is_namespaced(self, tmp_path):
+    def test_embedding_model_for_openai_backend_shares_fastembed_identity(
+        self, tmp_path
+    ):
+        """PR #47 review item 2: a verified remote endpoint shares the SAME
+        cache rows as local fastembed, so embedding_model is no longer
+        namespaced per host/model under the openai backend."""
         config = self._write(
             tmp_path,
             '[embedding]\nbackend = "openai"\n'
             'base_url = "http://localhost:8000/v1"\n'
             'model = "bge-small-en-v1.5"\n',
         )
-        assert config.embedding_model == "openai:localhost:8000/bge-small-en-v1.5"
+        assert config.embedding_model == DEFAULT_MODEL
+
+    def test_openai_backend_rejects_verify_startup_key(self, tmp_path):
+        """PR #47 review item 2: the cosine-parity check is now mandatory,
+        so a config still setting the removed [embedding].verify_startup
+        key must fail loudly rather than silently do nothing."""
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n'
+            "verify_startup = false\n",
+        )
+        with pytest.raises(ValueError, match="verify_startup"):
+            config.remote_embedding_spec
 
 
 class TestDisableRemoteEmbeddingBackend:
