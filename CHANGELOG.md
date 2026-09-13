@@ -80,10 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `config.toml` turns on a German-stemmed mirror index for keyword and hybrid
   search, so a query like `kündigen` now also finds pages using `Kündigung`
   or the common ASCII-transliteration spellings (`Kuendigung`, `Strasse` for
-  `Straße`) — none of which the default English/porter index could match.
+  `Straße`), none of which the default English/porter index could match.
   Turning it on for the first time stems the whole existing cache once,
   before the server accepts requests. Off by default; see
   [docs/configuration.md](docs/configuration.md).
+  ([#43](https://github.com/jztan/pdf-mcp/issues/43))
 
 - **OCR with nothing to install (Claude Desktop bundle).** On Windows and
   Macs, the first OCR call on a computer with no Tesseract downloads a
@@ -138,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Contributors
 
-- @janLo — `pdf-mcp-warm` offline prewarm, section-index warming in `pdf_corpus_warm`, and a core-scaled OCR/render worker pool, benchmarked on a 24-thread host ([#41](https://github.com/jztan/pdf-mcp/pull/41))
+- @janLo — `pdf-mcp-warm` offline prewarm, section-index warming in `pdf_corpus_warm`, and a core-scaled OCR/render worker pool, benchmarked on a 24-thread host ([#41](https://github.com/jztan/pdf-mcp/pull/41)), and opt-in German-aware keyword search ([#44](https://github.com/jztan/pdf-mcp/pull/44))
 
 ## [3.2.0] - 2026-09-12
 ### Added
