@@ -17,7 +17,11 @@ Gitflow:
     3. Create release/vX.Y.Z branch and bump versions
     4. Draft + approve release notes via claude -p: three headline candidates
        (steerable with a `<!-- headline: ... -->` comment atop [Unreleased]),
-       persisted for recovery
+       persisted for recovery. To edit the notes in any app instead of
+       mid-release: `--dry-run` saves the draft to release_notes_vX.Y.Z.md,
+       and the real run publishes that file as approved (or pass
+       `--notes-file PATH`). It is checked for the right version and every
+       contributor credit before anything is branched.
     5. Merge to master, push tag (triggers publish-pypi.yml)
     6. Wait for publish-pypi workflow to finish (poll gh run status)
     7. Wait for the version to appear on PyPI
@@ -27,16 +31,21 @@ Gitflow:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_mcpb  # noqa: E402
 
 # Single source of truth is the workflow's `env: IMAGE`; a contract test in
 # tests/test_docker_contract.py asserts these two agree.
@@ -354,6 +363,75 @@ def update_server_json(project_root: Path, new_version: str, dry_run: bool) -> N
         print("  ✓ Updated server.json")
 
 
+def mcpb_release_url(version: str) -> str:
+    return (
+        f"https://github.com/jztan/pdf-mcp/releases/download/v{version}/"
+        f"{build_mcpb.bundle_filename(version)}"
+    )
+
+
+def build_and_register_mcpb(
+    project_root: Path, new_version: str, dry_run: bool
+) -> Path | None:
+    """Build the Claude Desktop bundle and record it in server.json.
+
+    Runs after uv.lock is regenerated (its dependency pins come from it) and
+    before the bump commit, because server.json is committed before the tag.
+    The build is byte-reproducible and create_github_release re-hashes the
+    file before uploading, so what the registry verifies is what ships.
+    """
+    if dry_run:
+        print(f"  [DRY-RUN] Would build {build_mcpb.bundle_filename(new_version)}")
+        print("  [DRY-RUN] Would add its mcpb entry + fileSha256 to server.json")
+        return None
+    path, sha = build_mcpb.build(new_version, project_root / "dist")
+    server_json = project_root / "server.json"
+    content = json.loads(server_json.read_text(encoding="utf-8"))
+    packages = [
+        p for p in content.get("packages", []) if p.get("registryType") != "mcpb"
+    ]
+    packages.append(
+        {
+            "registryType": "mcpb",
+            "identifier": mcpb_release_url(new_version),
+            "fileSha256": sha,
+            "transport": {"type": "stdio"},
+        }
+    )
+    content["packages"] = packages
+    server_json.write_text(json.dumps(content, indent=2) + "\n", encoding="utf-8")
+    print(f"  ✓ Built {path.name} ({sha[:12]}) and registered it in server.json")
+    return path
+
+
+def mcpb_asset_for_upload(project_root: Path, new_version: str) -> Path | None:
+    path = project_root / "dist" / build_mcpb.bundle_filename(new_version)
+    if not path.exists():
+        return None
+    content = json.loads((project_root / "server.json").read_text(encoding="utf-8"))
+    expected = next(
+        (
+            p["fileSha256"]
+            for p in content.get("packages", [])
+            if p.get("registryType") == "mcpb"
+        ),
+        None,
+    )
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if expected != actual:
+        print(f"  ✗ {path.name} hash {actual[:12]} does not match server.json")
+        return None
+    return path
+
+
+def stable_bundle_copy(bundle: Path) -> Path:
+    """The same bytes under build_mcpb.STABLE_FILENAME, for the
+    releases/latest/download link in the README and on the site."""
+    stable = bundle.with_name(build_mcpb.STABLE_FILENAME)
+    shutil.copyfile(bundle, stable)
+    return stable
+
+
 def update_init_py(project_root: Path, new_version: str, dry_run: bool) -> None:
     """Update __version__ in __init__.py."""
     init_py = project_root / "src" / "pdf_mcp" / "__init__.py"
@@ -431,6 +509,44 @@ def collect_changelog_contributors(changelog: str) -> list[str]:
 
 def render_contributors_line(handles: list[str]) -> str:
     return " · ".join(f"[@{h}](https://github.com/{h})" for h in handles)
+
+
+#: A block between these markers describes something merged but not yet
+#: released (GitHub shows develop's README, so it is public before the
+#: release). The release deletes every such block, so a notice like "coming
+#: in the next release" cannot outlive the release it announces.
+UNTIL_RELEASE_START = "<!-- until-release -->"
+UNTIL_RELEASE_END = "<!-- /until-release -->"
+UNTIL_RELEASE_FILES = ("README.md", "docs/clients.md")
+
+
+def strip_until_release_blocks(text: str) -> str:
+    starts, ends = text.count(UNTIL_RELEASE_START), text.count(UNTIL_RELEASE_END)
+    if starts != ends:
+        raise RuntimeError(
+            f"{starts} {UNTIL_RELEASE_START} but {ends} {UNTIL_RELEASE_END}; "
+            "fix the markers so the release removes exactly the notice"
+        )
+    return re.sub(
+        rf"{re.escape(UNTIL_RELEASE_START)}\n.*?{re.escape(UNTIL_RELEASE_END)}\n\n?",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+
+
+def remove_until_release_notices(project_root: Path, dry_run: bool) -> None:
+    for name in UNTIL_RELEASE_FILES:
+        path = project_root / name
+        content = path.read_text(encoding="utf-8")
+        new_content = strip_until_release_blocks(content)
+        if new_content == content:
+            continue
+        if dry_run:
+            print(f"  [DRY-RUN] Would remove the until-release notice from {name}")
+        else:
+            path.write_text(new_content, encoding="utf-8")
+            print(f"  ✓ Removed the until-release notice from {name}")
 
 
 def update_readme_contributors(project_root: Path, dry_run: bool) -> None:
@@ -757,18 +873,75 @@ def generate_release_notes(
     return _parse_titles(output, tag)
 
 
-def write_notes_file(path: Path, title: str, body: str) -> None:
-    """Persist approved notes; first line is an invisible title comment."""
-    path.write_text(f"<!-- title: {title} -->\n{body.strip()}\n", encoding="utf-8")
+_ALTERNATES_HEADER = (
+    "<!-- other titles (copy one into the title line above to use it;"
+    " this block is dropped on publish):"
+)
+_ALTERNATES_RE = re.compile(r"<!-- other titles.*?-->\n?", re.DOTALL)
+
+
+def write_notes_file(
+    path: Path, title: str, body: str, alternates: list[str] | None = None
+) -> None:
+    """Persist notes; first line is an invisible title comment.
+
+    ``alternates`` (the other headline candidates) go in a comment block
+    under the title so a maintainer editing the draft can swap one in;
+    read_notes_file drops the block, so it never reaches the release.
+    """
+    head = f"<!-- title: {title} -->\n"
+    if alternates:
+        head += _ALTERNATES_HEADER + "\n" + "\n".join(alternates) + "\n-->\n"
+    path.write_text(f"{head}{body.strip()}\n", encoding="utf-8")
 
 
 def read_notes_file(path: Path) -> tuple[str | None, str]:
     """Read persisted notes back. Returns (title or None, body)."""
     content = path.read_text(encoding="utf-8")
     match = re.match(r"<!-- title: (.*?) -->\n", content)
+    title = None
     if match:
-        return match.group(1), content[match.end() :].strip()
-    return None, content.strip()
+        title, content = match.group(1).strip(), content[match.end() :]
+    content = _ALTERNATES_RE.sub("", content.lstrip(), count=1)
+    return title, content.strip()
+
+
+class NotesFileError(ValueError):
+    """A pre-written notes file cannot be published for this version."""
+
+
+def load_approved_notes(
+    path: Path, new_version: str, changelog_section: str
+) -> tuple[str, str]:
+    """Validate a maintainer-approved notes file; return (title, body).
+
+    Runs before anything is branched or tagged, so a wrong file stops the
+    release while it is still free to stop. The checks catch the two ways
+    a hand-edited or reused draft goes wrong: it was drafted for another
+    version (a patch/minor mix-up, or a leftover from a burned version),
+    or editing dropped a contributor credit.
+    """
+    tag = f"v{new_version}"
+    if not path.is_file():
+        raise NotesFileError(f"notes file not found: {path}")
+    title, body = read_notes_file(path)
+    if not body:
+        raise NotesFileError(f"notes file {path} has an empty body")
+    if title is None or not (title == tag or title.startswith(f"{tag}:")):
+        raise NotesFileError(
+            f"notes file {path} is titled {title!r}; this release is {tag}. "
+            f"The first line must be `<!-- title: {tag}: <headline> -->`."
+        )
+    missing = [
+        f"@{h}"
+        for h in collect_changelog_contributors(changelog_section)
+        if f"@{h}" not in body
+    ]
+    if missing:
+        raise NotesFileError(
+            f"notes file {path} drops contributor credits: {', '.join(missing)}"
+        )
+    return title, body
 
 
 def _edit_notes_in_editor(path: Path) -> None:
@@ -876,9 +1049,21 @@ def approve_release_notes(
             print(f"  Please answer y, {picks}, e, r, or f.")
 
 
-def preview_release_notes(config: ReleaseConfig, new_version: str) -> None:
-    """Dry-run: draft real notes from [Unreleased] and print them."""
+def preview_release_notes(
+    config: ReleaseConfig, new_version: str, notes_path: Path
+) -> None:
+    """Dry-run: draft real notes from [Unreleased], print, and save them.
+
+    The draft lands at notes_path (gitignored) for the maintainer to edit
+    in any app; the real run then publishes it as approved instead of
+    regenerating. An existing draft is never overwritten: it may hold
+    edits, so delete it to get a fresh one.
+    """
     print("\n=== Release Notes (Preview) ===\n")
+    if notes_path.exists():
+        print(f"  [DRY-RUN] Keeping the existing draft at {notes_path}")
+        print("  [DRY-RUN] (delete it to generate a fresh one)")
+        return
     hint, section = split_headline_hint(extract_unreleased_section(config.project_root))
     try:
         titles, generated = generate_release_notes(
@@ -893,6 +1078,9 @@ def preview_release_notes(config: ReleaseConfig, new_version: str) -> None:
         print(f"  [DRY-RUN] Title {n}: {candidate}")
     print("  [DRY-RUN] Notes preview:\n")
     print(body)
+    write_notes_file(notes_path, titles[0], body, alternates=titles[1:])
+    print(f"\n  ✓ Draft saved to {notes_path}")
+    print("    Edit it in any app; the real run publishes it as written.")
 
 
 def regenerate_uv_lock(config: ReleaseConfig) -> None:
@@ -909,6 +1097,9 @@ def commit_version_bump(config: ReleaseConfig, new_version: str) -> None:
     print("\n=== Commit Version Bump ===\n")
 
     regenerate_uv_lock(config)
+    # After the lock (the bundle's dependency pins come from it), before the
+    # commit (server.json carries the bundle's hash and is committed pre-tag).
+    build_and_register_mcpb(config.project_root, new_version, config.dry_run)
 
     # Stage changes
     files = [
@@ -918,6 +1109,7 @@ def commit_version_bump(config: ReleaseConfig, new_version: str) -> None:
         "docs/ROADMAP.md",
         "CHANGELOG.md",
         "README.md",
+        "docs/clients.md",
         "uv.lock",
     ]
     for f in files:
@@ -995,6 +1187,11 @@ def create_github_release(config: ReleaseConfig, new_version: str) -> None:
 
     if config.dry_run:
         print(f"  [DRY-RUN] Would create GitHub release: {tag}")
+        print(
+            "  [DRY-RUN] Would attach "
+            f"dist/{build_mcpb.bundle_filename(new_version)} and the same file "
+            f"as dist/{build_mcpb.STABLE_FILENAME}"
+        )
         if notes_path.exists():
             print(f"  [DRY-RUN] Title: {title}")
             print("  [DRY-RUN] Release notes preview:")
@@ -1007,10 +1204,23 @@ def create_github_release(config: ReleaseConfig, new_version: str) -> None:
                 "notes file (see the Release Notes preview above)."
             )
     else:
-        result = run_command(
-            ["gh", "release", "create", tag, "--title", title, "--notes", notes],
-            check=False,
-        )
+        cmd = ["gh", "release", "create", tag, "--title", title, "--notes", notes]
+        bundle = mcpb_asset_for_upload(config.project_root, new_version)
+        if bundle is not None:
+            cmd += [str(bundle), str(stable_bundle_copy(bundle))]
+        else:
+            print("  ⚠ Releasing without the .mcpb; rebuild and upload with:")
+            print(f"      python scripts/build_mcpb.py --version {new_version}")
+            print(
+                f"      cp dist/{build_mcpb.bundle_filename(new_version)} "
+                f"dist/{build_mcpb.STABLE_FILENAME}"
+            )
+            print(
+                f"      gh release upload {tag} "
+                f"dist/{build_mcpb.bundle_filename(new_version)} "
+                f"dist/{build_mcpb.STABLE_FILENAME}"
+            )
+        result = run_command(cmd, check=False)
         if result.returncode != 0:
             print("  ✗ gh release create failed:")
             print(f"    {result.stderr.strip()}")
@@ -1301,6 +1511,11 @@ Examples:
   python scripts/release.py major           # 1.1.1 -> 2.0.0
   python scripts/release.py patch --dry-run # Preview changes
 
+Release notes, edited outside the terminal:
+  python scripts/release.py minor --dry-run # saves release_notes_vX.Y.Z.md
+  # edit that file in any app, then:
+  python scripts/release.py minor           # publishes the edited draft
+
 Gitflow:
   develop -> release/vX.Y.Z -> master (tagged) -> merge back to develop
         """,
@@ -1313,7 +1528,15 @@ Gitflow:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview changes without executing",
+        help="Preview changes without executing; saves a release-notes draft",
+    )
+    parser.add_argument(
+        "--notes-file",
+        type=Path,
+        help=(
+            "Publish this pre-approved notes file instead of generating one. "
+            "Defaults to the draft a --dry-run saved, when it exists."
+        ),
     )
 
     args = parser.parse_args()
@@ -1341,6 +1564,22 @@ Gitflow:
     current_version = get_current_version(config.project_root)
     new_version = calculate_new_version(current_version, config.bump_type)
 
+    # Step 2b: A pre-approved notes file (explicit, or the draft a dry run
+    # saved) is validated now, before anything is branched or tagged.
+    notes_path = notes_file_path(config.project_root, new_version)
+    notes_source = args.notes_file or (notes_path if notes_path.exists() else None)
+    approved: tuple[str, str] | None = None
+    if notes_source is not None:
+        _, unreleased = split_headline_hint(
+            extract_unreleased_section(config.project_root)
+        )
+        try:
+            approved = load_approved_notes(notes_source, new_version, unreleased)
+        except NotesFileError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
+        print(f"\nUsing approved release notes from {notes_source}")
+
     # Step 3: Create release branch
     release_branch = create_release_branch(new_version, config.dry_run)
 
@@ -1358,15 +1597,23 @@ Gitflow:
     )
     update_changelog(config.project_root, new_version, config.dry_run)
     update_readme_contributors(config.project_root, config.dry_run)
+    remove_until_release_notices(config.project_root, config.dry_run)
 
     # Step 5: Commit version bump on release branch
     commit_version_bump(config, new_version)
 
     # Step 5b: Draft + approve release notes NOW, so the long unattended
     # waits (publish workflow, PyPI) happen after the human interaction.
-    notes_path = notes_file_path(config.project_root, new_version)
-    if config.dry_run:
-        preview_release_notes(config, new_version)
+    if approved is not None:
+        title, body = approved
+        print("\n=== Release Notes ===\n")
+        print(f"  Title: {title}")
+        if not config.dry_run:
+            # Normalise into the recovery path (drops the alternates block).
+            write_notes_file(notes_path, title, body)
+        print(f"  ✓ Using approved notes from {notes_source}")
+    elif config.dry_run:
+        preview_release_notes(config, new_version, notes_path)
     else:
         print("\n=== Release Notes ===\n")
         changelog_section = extract_changelog_section(config.project_root, new_version)

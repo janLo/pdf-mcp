@@ -66,6 +66,11 @@ PDF_MCP_MAX_WORKERS=8
 # CUDA)" below.
 PDF_MCP_CUDA=1
 
+# OCR with no Tesseract installed: 1 = download pdf-mcp's portable,
+# English-only Tesseract on the first OCR call (the Claude Desktop bundle
+# sets this); unset = never. [ocr] auto_install in the config file wins.
+PDF_MCP_OCR_AUTO_INSTALL=1
+
 # HTTP transport only (pdf-mcp-http); ignored by the stdio entry point.
 PDF_MCP_AUTH_TOKEN=<secret>       # required, no default
 PDF_MCP_HTTP_HOST=127.0.0.1       # bind address
@@ -126,7 +131,7 @@ What the variable does:
 
 | `PDF_MCP_CUDA` | behaviour |
 |---|---|
-| `1` | GPU. If the CUDA provider cannot load, the server warns with the provider it actually got and falls back to CPU instead of running slower in silence. |
+| `1` | GPU. If the CUDA provider cannot load, or loads but fails a one-line test encode (a cuDNN or cuBLAS series mismatch, or a card out of memory), the server warns with the reason and falls back to CPU instead of running slower in silence or failing mid-search. |
 | `0` | CPU, always. |
 | unset | fastembed decides. On a plain install that is the CPU, exactly as before. On a machine where onnxruntime-gpu is installed and a CUDA runtime is already on the library path (a system-wide CUDA toolkit, for example) it auto-detects the GPU even though nothing asked for it. Set `0` if that is not what you want. |
 
@@ -374,3 +379,46 @@ substring matching; `server_info` reports this as
 - Automatic when file modification time changes
 - Manual via the `pdf_cache_clear` tool
 - TTL: 24 hours (configurable)
+
+## Network requests
+
+pdf-mcp works offline except for these:
+
+- **URLs you pass it:** `path` can be an `https://` URL; pdf-mcp downloads it.
+- **Embedding model:** the first semantic search downloads the model once.
+- **Update check (Claude Desktop bundle only):** once a day, one anonymous
+  HTTPS GET to `https://pypi.org/pypi/pdf-mcp/json` (no file paths, no
+  document content, no identifiers), in the background, giving up after 3
+  seconds. pip and uvx installs never make it. Turn it off by unticking
+  **Check for updates** in Claude Desktop's extension settings, with
+  `PDF_MCP_UPDATE_CHECK=0`, or in `~/.config/pdf-mcp/config.toml`:
+
+  ```toml
+  [updates]
+  check = false
+  ```
+
+  The config file wins over the other two; `check = true` turns the check on
+  for any install.
+- **Tesseract for OCR (Claude Desktop bundle only):** the first OCR call
+  on a computer with no Tesseract installed downloads a portable,
+  English-only Tesseract (about 14 MB) from
+  `github.com/jztan/pdf-mcp-tesseract` releases, checked against a SHA-256
+  shipped in pdf-mcp, and unpacks it into `<cache dir>/tesseract/`.
+  Windows x64 and macOS (Apple Silicon and Intel) only. A Tesseract you
+  installed yourself is always used first, and nothing downloads until OCR
+  is asked for. pip and uvx installs never download it unless the config
+  says so. Turn it off in `~/.config/pdf-mcp/config.toml`:
+
+  ```toml
+  [ocr]
+  auto_install = false
+  ```
+
+  `auto_install = true` turns it on for any install.
+- **Bundle first start:** the Claude Desktop bundle downloads uv from
+  Astral's GitHub releases (`github.com/astral-sh/uv`, checked against a
+  SHA-256 shipped in the bundle), then Python from Astral's
+  python-build-standalone GitHub releases, then pdf-mcp and its
+  dependencies (exact versions, pinned in the bundle) from PyPI. A new
+  bundle version downloads only what changed.

@@ -54,6 +54,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PDF_MCP_MAX_WORKERS` explicitly there. See
   [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md).
 
+- **One-click install for Claude Desktop.** Every release now ships a
+  `pdf-mcp-<version>.mcpb` bundle. Download it and drag it onto Claude
+  Desktop's Settings > Extensions page; nothing needs to be installed
+  first, not Python and not uv. The first start downloads pdf-mcp's
+  components (about 250 MB) into `~/.cache/pdf-mcp` and can take a few
+  minutes; Claude sees the tools right away and they start answering once
+  setup finishes. Later starts take seconds, and installing a newer
+  bundle replaces the old one in place, even while it is running. Works
+  in Claude Desktop's Chat, on Windows 10+, Intel Macs with macOS 13+, and
+  Apple Silicon Macs with macOS 14+. If setup cannot finish (for example the
+  computer is offline), Claude is told why in plain words instead of
+  seeing a disconnected server. Each release also carries the bundle as
+  `pdf-mcp.mcpb`, so
+  https://github.com/jztan/pdf-mcp/releases/latest/download/pdf-mcp.mcpb
+  always downloads the newest one.
+
+- **Bundle installs learn about new versions.** Once a day the bundle asks
+  PyPI whether a newer pdf-mcp exists, and Claude mentions it once, on the
+  first result after it is found; `server_info` reports it under `update`.
+  Turn it off in the extension settings, with `PDF_MCP_UPDATE_CHECK=0`, or
+  with `[updates] check = false`. pip and uvx installs never check.
+
+- **OCR with nothing to install (Claude Desktop bundle).** On Windows and
+  Macs, the first OCR call on a computer with no Tesseract downloads a
+  portable, English-only Tesseract (about 14 MB), checks it against a
+  SHA-256 shipped in pdf-mcp, and uses it. A Tesseract you installed
+  always wins. If the download takes longer than about 20 seconds, Claude
+  is told OCR is being set up and to try again shortly. `server_info`
+  reports where OCR comes from under `ocr.source`. Turn it off with
+  `[ocr] auto_install = false`; pip and uvx installs never download it
+  unless that is set to `true`.
+
+### Fixed
+
+- **OCR finds Tesseract installed outside `PATH`.** The Windows
+  installer's default folder, and Homebrew on macOS when Claude Desktop
+  starts the server, were invisible, so OCR reported Tesseract missing
+  after a normal install. `server_info` now re-checks OCR on every call, so
+  installing Tesseract mid-session works without a restart.
+
+- **OCR works with a Tesseract unpacked anywhere.** A Tesseract without a
+  built-in install path (a portable or unzipped copy on macOS or Linux)
+  reports "./" as its language-data folder; pdf-mcp accepted that and OCR
+  failed with "Error opening data file ./eng.traineddata". pdf-mcp now uses a
+  reported folder only if it holds language data, and otherwise the
+  `tessdata` folder next to the Tesseract program.
+
+- **The missing-Tesseract error gives one install step for your OS.** The
+  Windows command is now `winget install -e --id UB-Mannheim.TesseractOCR`;
+  the old one failed with "Multiple packages found".
+
+- **pdf-mcp no longer prints fastmcp's startup banner,** which also checked
+  PyPI for fastmcp updates on every start.
+
+- **`PDF_MCP_CUDA=1` now falls back to CPU when the GPU session cannot
+  actually encode.** onnxruntime can load the CUDA provider and still fail
+  on the first batch (a cuDNN or cuBLAS series that does not match the
+  onnxruntime-gpu build, or a GPU with no free memory). The server used to
+  accept such a session and the failure surfaced inside the first search
+  or corpus warm. It now runs one short test encode when the model loads,
+  and on failure warns with the error and uses the CPU.
+
+- **Snippet excerpts no longer cut words or numbers in half.** Keyword
+  hits could open or close inside a hyphenated word or a decimal, so a
+  datasheet value of `0.30` could come back as `30`. Semantic hits ended
+  mid-word and carried no `...` markers at all, so one `pdf_search` or
+  `pdf_corpus_search` response mixed two excerpt shapes. Every snippet
+  excerpt now starts and ends on a whole word and carries `...` exactly
+  where page text was cut. On the 20-document excerpt benchmark,
+  mid-word cuts in `mode="auto"` snippets fell from 135 of 425 to 1 (a
+  URL longer than the widening limit), and wrong or missing markers from
+  283 to 0.
+
+## [3.2.0] - 2026-09-12
+### Added
+
 - **Optional CUDA acceleration for embedding, off by default.** Set
   `PDF_MCP_CUDA=1` with the CUDA build of onnxruntime installed and the
   embedding pass runs on the GPU (one to two orders of magnitude faster on
@@ -76,14 +152,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embeddings and the on-demand re-embed in `pdf_search` both benefit.
   The CUDA path is unchanged: a GPU wants the large batch.
 
-- **Semantic-mode `excerpt_style="paragraph"` and `"window"` searches are
-  faster.** `pdf_search` and `pdf_corpus_search` no longer compute the
-  anchored snippet span for every semantic-only hit when a paragraph or
-  window excerpt is going to replace it; the span is computed only where
-  those styles fall back to it (scanned or block-less pages, or no block
-  holding a query term). Excerpts are unchanged. Measured on the
-  pure-semantic benchmark: corpus paragraph 1.88 s to 1.37 s per query,
-  single-document paragraph 0.20 s to 0.05 s.
 - **`pdf_corpus_warm` embedding progress now commits in durable page
   batches.** A document too large to embed within one `budget_seconds`
   reports `status: "partial"` with `embedded_pages`, stays in
@@ -99,7 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returned the top of the page as the `excerpt_style="snippet"` excerpt,
   so a hit on a prefaced page showed boilerplate while the matching text
   sat further down. All three now anchor on the page's best-scoring
-  passage, as corpus hybrid mode already did.
+  passage, as corpus hybrid mode already did. The span costs an encode,
+  so semantic-mode `excerpt_style="paragraph"` and `"window"` searches
+  are slower than in 3.1.0: corpus semantic paragraph search measured
+  0.81 s to 1.37 s per query on the pure-semantic benchmark. The span is
+  computed only where those styles fall back to it (scanned or
+  block-less pages, or no block holding a query term).
 
 ### Contributors
 

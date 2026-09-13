@@ -9,6 +9,7 @@ Usage:
 """
 
 import base64
+import copy
 import hashlib
 import json
 import logging
@@ -32,6 +33,8 @@ from . import __version__
 from . import chart_extractor
 from . import content_trust
 from . import corpus
+from . import portable_tesseract
+from . import updates
 from .cache import PDFCache, normalize_ocr_lang
 from .config import PDFConfig
 from .extractor import (
@@ -39,6 +42,7 @@ from .extractor import (
     _columns_reliable,
     block_bbox_for_index,
     check_tesseract_available,
+    find_tesseract,
     estimate_tokens,
     extract_images_from_page,
     extract_metadata,
@@ -52,6 +56,7 @@ from .extractor import (
     page_text_chars,
     stale_layout_pages,
     parse_page_range,
+    tesseract_install_hint,
     render_page_as_image,
     render_page_as_png,
 )
@@ -214,6 +219,28 @@ cache = PDFCache(
 )
 pdf_config = PDFConfig()
 url_fetcher = URLFetcher(cache_dir=cache.cache_dir / "downloads", config=pdf_config)
+
+# Update check: bundle installs only (the bundle sets PDF_MCP_UPDATE_CHECK),
+# and `[updates] check` in the config always wins. Claude Desktop does not
+# show server `instructions` to the model, so the notice rides on the first
+# dict-shaped tool result of this process; instructions carry it too for
+# clients that read them.
+_UPDATE_CHECK_ENABLED = updates.check_enabled(pdf_config.update_check)
+# Zero-install OCR (bundle installs, or [ocr] auto_install = true).
+portable_tesseract.configure(cache.cache_dir)
+_OCR_AUTO_INSTALL = portable_tesseract.enabled(pdf_config.ocr_auto_install)
+_BASE_INSTRUCTIONS: str = mcp.instructions or ""
+
+
+def _initial_notice(enabled: bool, cache_dir: Path) -> str:
+    if not enabled:
+        return ""
+    return updates.notice_text(updates.update_status(__version__, cache_dir, True))
+
+
+_pending_notice = _initial_notice(_UPDATE_CHECK_ENABLED, cache.cache_dir)
+if _pending_notice:
+    mcp.instructions = f"{_BASE_INSTRUCTIONS}\n\nUPDATE: {_pending_notice}"
 
 
 def _resolve_path(
@@ -413,13 +440,11 @@ def _detect_features() -> dict[str, Any]:
     (`extractor.column_detection_available`) so the reported flag can never
     drift from what extraction actually does.
     """
-    import shutil
-
     from . import embedder, extractor
 
     column_aware = extractor.column_detection_available()
     vertical_aware = extractor.vertical_detection_available()
-    ocr_available = shutil.which("tesseract") is not None
+    ocr_available = find_tesseract() is not None
 
     search: dict[str, Any] = {
         "modes_available": ["keyword"],
@@ -916,18 +941,9 @@ def pdf_read_pages(
     handling a raised exception.
     """
     if ocr:
-        try:
-            check_tesseract_available()
-        except RuntimeError as exc:
-            return {
-                "error": str(exc),
-                "install_hint": (
-                    "brew install tesseract (macOS) / "
-                    "apt install tesseract-ocr (Linux) / "
-                    "winget install Tesseract-OCR (Windows); "
-                    "or set TESSDATA_PREFIX env var to your tessdata directory"
-                ),
-            }
+        missing = _ocr_unavailable(ocr_lang)
+        if missing is not None:
+            return missing
 
     _res = _resolve_path(path)
     if _res[1] is not None:
@@ -3965,7 +3981,27 @@ def _semantic_snippet_excerpt(
         if terms and not any(t in low_chunk for t in terms):
             if any(t in page_text.lower() for t in terms):
                 text = page_text
-    return _best_span_in_text(text, query_vec, model, context_chars, query=query)
+    span = _best_span_in_text(text, query_vec, model, context_chars, query=query)
+    return _whole_token_span(span, page_text, text)
+
+
+def _whole_token_span(span: str, page_text: str, searched: str) -> str:
+    """Widen a semantic span to whole tokens and mark its cuts, the same
+    shape keyword excerpts have. The span is a raw character window, so it
+    ended mid-word and carried no "..." markers. Markers are judged against
+    the page text where the span can be found there, because a span that
+    opens a sub-page chunk does not open the page. Fail-safe: a span found
+    in neither text comes back unchanged."""
+    from .extractor import widen_to_token_bounds
+
+    if not span.strip():
+        return span
+    for source in (page_text, searched):
+        if source:
+            i = source.find(span)
+            if i >= 0:
+                return widen_to_token_bounds(source, i, i + len(span))
+    return span
 
 
 def _best_subchunk_text(
@@ -4811,6 +4847,104 @@ def _document_roots(patterns: tuple[str, ...]) -> list[str]:
     return sorted(roots)
 
 
+def _ocr_unavailable(ocr_lang: str) -> dict[str, Any] | None:
+    """None when OCR can run; otherwise the inline error to return.
+
+    With auto-install on and no Tesseract installed, the first call fetches
+    the pinned portable Tesseract, waiting up to
+    portable_tesseract.WAIT_SECONDS before replying "setting up".
+    """
+    try:
+        check_tesseract_available()
+    except RuntimeError as exc:
+        missing: dict[str, Any] = {
+            "error": str(exc),
+            "install_hint": (
+                tesseract_install_hint()
+                + "; or set TESSDATA_PREFIX env var to your tessdata directory"
+            ),
+        }
+        if not _OCR_AUTO_INSTALL:
+            return missing
+        state, detail = portable_tesseract.ensure()
+        if state == "downloading":
+            return {
+                "error": (
+                    "Setting up OCR (a one-time download of about 14 MB). "
+                    "Try again in a minute."
+                ),
+                "hint": (
+                    "Meanwhile pdf_render_pages shows the page as an image you "
+                    "can read directly."
+                ),
+            }
+        if state != "ready":
+            logger.info("portable Tesseract unavailable: %s", detail)
+            return missing
+        from . import extractor as _extractor
+
+        # Re-resolve now that the portable copy exists.
+        _extractor._TESSERACT_EXE = None
+        _extractor._TESSDATA_PATH = None
+        try:
+            check_tesseract_available()
+        except RuntimeError:
+            return missing
+    if not _lang_available(ocr_lang):
+        return {
+            "error": (
+                f"The OCR language '{ocr_lang}' is not installed. The Tesseract "
+                "pdf-mcp set up includes English only; install Tesseract with "
+                "that language to read it."
+            ),
+            "install_hint": tesseract_install_hint(),
+        }
+    return None
+
+
+def _lang_available(ocr_lang: str) -> bool:
+    """True unless the Tesseract in use is pdf-mcp's portable, English-only
+    copy and a language it lacks was asked for."""
+    from . import extractor as _extractor
+
+    exe = find_tesseract()
+    if exe is None or exe != portable_tesseract.installed_binary():
+        return True
+    tessdata = _extractor._TESSDATA_PATH
+    if not tessdata:
+        return True
+    return all(
+        os.path.isfile(os.path.join(tessdata, f"{lang}.traineddata"))
+        for lang in ocr_lang.split("+")
+        if lang
+    )
+
+
+def _live_features() -> dict[str, Any]:
+    """Startup feature probe with the OCR flag re-checked per call.
+
+    Claude Desktop keeps servers for the app's lifetime and Tesseract can be
+    installed meanwhile; OCR re-resolves the binary per call, so the flag
+    must too.
+    """
+    features = copy.deepcopy(_SERVER_FEATURES)
+    source = _ocr_source()
+    features["extraction"]["ocr"]["available"] = source != "none"
+    features["extraction"]["ocr"]["source"] = source
+    return features
+
+
+def _ocr_source() -> str:
+    """system | portable | on_first_use (a bundle install that will fetch
+    the portable Tesseract on the first OCR call) | none."""
+    exe = find_tesseract()
+    if exe is not None:
+        return "portable" if exe == portable_tesseract.installed_binary() else "system"
+    if _OCR_AUTO_INSTALL and portable_tesseract.platform_key() is not None:
+        return "on_first_use"
+    return "none"
+
+
 @mcp.tool(
     description=(
         "Report which optional features are installed and what "
@@ -4826,7 +4960,8 @@ def _document_roots(patterns: tuple[str, ...]) -> list[str]:
         "list, document roots, and active config values. Cheap to call "
         "(no I/O beyond reading process state and stat-ing the configured "
         "roots). Results are stable for the server's lifetime, except that "
-        "a root appears once its directory exists on disk."
+        "a root appears once its directory exists on disk and OCR shows as "
+        "available once Tesseract is installed."
     )
 )
 def server_info() -> dict[str, Any]:
@@ -4841,7 +4976,10 @@ def server_info() -> dict[str, Any]:
     Returns:
         - version: pdf-mcp release version.
         - features: {
-            extraction: {column_aware, ocr} — each {available, description},
+            extraction: {column_aware, ocr} — each {available, description};
+                ocr also has source: "system", "portable", "on_first_use"
+                (a bundle install that downloads Tesseract on the first OCR
+                call) or "none",
             search: {modes_available, default_mode, embedding_model?}
                 (embedding_model present only when semantic search is
                  available),
@@ -4873,6 +5011,9 @@ def server_info() -> dict[str, Any]:
                    cache_dir}. cache_dir is a local filesystem path
                    (single-user STDIO deployment, per the pdf_cache_stats
                    precedent).
+        - update: {current, latest, update_available, checked_at,
+                   download_url} from the daily update check, or null when
+                   the check is off (every pip/uvx install by default).
     """
     # max_workers: resolve the actually-in-effect cap (PDF_MCP_MAX_WORKERS
     # override or the min(cpu_count, cap) default) by reusing resolve_workers
@@ -4882,7 +5023,10 @@ def server_info() -> dict[str, Any]:
     allow_patterns = pdf_config.path_allow_patterns
     return {
         "version": __version__,
-        "features": _SERVER_FEATURES,
+        "update": updates.update_status(
+            __version__, cache.cache_dir, _UPDATE_CHECK_ENABLED
+        ),
+        "features": _live_features(),
         "documents": {
             "access_mode": ("allowlist" if allow_patterns else "unrestricted"),
             "roots": _document_roots(allow_patterns),
@@ -5920,19 +6064,58 @@ def pdf_extract_chart(
 # ============================================================================
 
 
+from fastmcp.server.middleware import Middleware, MiddlewareContext  # noqa: E402
+from fastmcp.tools import ToolResult  # noqa: E402
+from mcp.types import TextContent  # noqa: E402
+
+
+class _UpdateNoticeMiddleware(Middleware):
+    """Adds the pending update notice to the first dict-shaped tool result.
+
+    Rebuilds the result from the updated dict so the JSON text block (what
+    clients such as Claude Desktop show the model) and structuredContent
+    both carry it. List-shaped results (pdf_render_pages) are left alone;
+    the notice waits for the next dict result.
+    """
+
+    async def on_call_tool(  # type: ignore[override]
+        self, context: MiddlewareContext, call_next: Any
+    ) -> ToolResult:
+        global _pending_notice  # noqa: PLW0603
+        result: ToolResult = await call_next(context)
+        data = result.structured_content
+        single_text = len(result.content) == 1 and isinstance(
+            result.content[0], TextContent
+        )
+        if _pending_notice and isinstance(data, dict) and single_text:
+            updated = {**data, "notice": _pending_notice}
+            _pending_notice = ""
+            return ToolResult(
+                content=updated, structured_content=updated, meta=result.meta
+            )
+        return result
+
+
+mcp.add_middleware(_UpdateNoticeMiddleware())
+
+
 def main() -> None:
     """
     Run the MCP server using STDIO transport.
 
     STDIO is used because:
-    - Claude Desktop spawns a new process per conversation
+    - Claude Desktop starts the server with the app and keeps it for the
+      app's lifetime
     - Communication happens via stdin/stdout
-    - Process exits after conversation ends
+    - Process exits when the client closes stdin
 
     That's why we use SQLite caching - it persists between process restarts.
     """
     # Explicitly use STDIO transport (this is the default, but being explicit)
-    mcp.run(transport="stdio")
+    if _UPDATE_CHECK_ENABLED:
+        updates.start_background_refresh(cache.cache_dir)
+    # show_banner=False: fastmcp's banner also checks PyPI for a newer fastmcp.
+    mcp.run(transport="stdio", show_banner=False)
 
 
 def main_http() -> None:
@@ -5999,7 +6182,7 @@ def main_http() -> None:
     port = int(os.environ.get("PDF_MCP_HTTP_PORT", "8000"))
     path = os.environ.get("PDF_MCP_HTTP_PATH", "/mcp")
 
-    mcp.run(transport="http", host=host, port=port, path=path)
+    mcp.run(transport="http", host=host, port=port, path=path, show_banner=False)
 
 
 if __name__ == "__main__":

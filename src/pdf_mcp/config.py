@@ -71,6 +71,28 @@ class PDFConfig:
         return model
 
     @property
+    def ocr_auto_install(self) -> bool | None:
+        """``[ocr] auto_install``: None when absent. Malformed values fail loudly."""
+        value = self._data.get("ocr", {}).get("auto_install")
+        if value is None or isinstance(value, bool):
+            return value
+        raise ValueError(
+            f"[ocr] auto_install must be true or false in {self._config_path}, "
+            f"got {value!r}"
+        )
+
+    @property
+    def update_check(self) -> bool | None:
+        """``[updates] check``: None when absent. Malformed values fail loudly."""
+        value = self._data.get("updates", {}).get("check")
+        if value is None or isinstance(value, bool):
+            return value
+        raise ValueError(
+            f"[updates] check must be true or false in {self._config_path}, "
+            f"got {value!r}"
+        )
+
+    @property
     def config_path(self) -> Path:
         """Path this config was loaded from (may not exist)."""
         return self._config_path
