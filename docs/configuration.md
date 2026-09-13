@@ -52,7 +52,14 @@ the running process touches — not per-document, and not auto-detected —
 so it suits a deployment that mostly reads German PDFs, not a mixed corpus.
 Compound-word splitting (`Kündigungsschutzklage` vs. `Kündigungsschutz`) is
 a known, deliberately out-of-scope gap: only inflection and umlaut/ß
-spelling variants are unified, not compound nouns.
+spelling variants are unified, not compound nouns. A multi-word query
+requires every word's stem to be present (no OR-fallback, unlike the
+default keyword path), so a query using one word the page doesn't have
+returns nothing rather than a partial match. Once turned on, the mirror
+index is maintained by every cache writer for the life of the cache
+directory — removing `[fts] language` from `config.toml` stops new
+queries from using it, but existing rows are only cleared by deleting the
+cache.
 
 **`[content_trust]`** — extends the hidden-text `injection_in_hidden` severity
 hint with your own (including non-English) phrases. They **extend** the built-in

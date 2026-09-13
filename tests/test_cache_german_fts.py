@@ -31,6 +31,17 @@ def test_german_normalize_is_order_stable_and_drops_punctuation():
     assert _german_normalize("§ 622 BGB!") == _german_normalize("622 BGB")
 
 
+def test_german_normalize_keeps_digits_as_their_own_token():
+    # Regression: an earlier _GERMAN_TOKEN_RE dropped digits entirely (as
+    # non-word characters), so "§ 626 BGB" normalized down to just "bgb"
+    # and a query for "626" matched nothing while matching every page that
+    # merely mentions "BGB". Digits must survive as tokens, unstemmed (the
+    # Snowball German stemmer is the identity on digit-only input).
+    assert _german_normalize("§ 626 BGB") == "626 bgb"
+    assert _german_normalize("626") == "626"
+    assert _german_normalize("2023") == "2023"
+
+
 @pytest.fixture
 def de_cache(tmp_path):
     """A cache opened with [fts] language = "de"."""
@@ -81,6 +92,22 @@ class TestGermanPageSearch:
         counts = de_cache.get_fts_page_counts(path, "kündigen")
         assert counts == {0: 2}
 
+    def test_numeric_query_matches_a_statute_citation_not_bare_bgb(
+        self, de_cache, tmp_path
+    ):
+        # Regression for the digit-dropping tokenizer bug: "626" must find
+        # the page citing "§ 626 BGB" and must NOT also return an unrelated
+        # page that only mentions "BGB" without that number.
+        cite_path = _touch_pdf(tmp_path, "de_cite.pdf")
+        de_cache.save_page_text(cite_path, 0, "Die fristlose Kündigung nach § 626 BGB.")
+        other_path = _touch_pdf(tmp_path, "de_other.pdf")
+        de_cache.save_page_text(other_path, 0, "Das BGB regelt viele Alltagsfragen.")
+
+        assert [r["page"] for r in de_cache.search_fts(cite_path, "626", 10, 100)] == [
+            1
+        ]
+        assert de_cache.search_fts(other_path, "626", 10, 100) == []
+
     def test_default_cache_has_no_german_stemming(self, cache, tmp_path):
         """Sanity check: without [fts] language = "de", inflected forms are
         NOT unified (porter's English stemmer does nothing useful here) --
@@ -110,3 +137,129 @@ class TestGermanSectionSearch:
         results = de_cache.search_section_fts(path, "kündigen", 10)
         assert len(results) == 1
         assert results[0]["title"] == "Kündigungsschutz"
+
+
+class TestGermanMirrorCompleteness:
+    """The mirror is only useful to search if it stays complete no matter
+    which PDFCache instance last wrote a document -- see the PR #44 review:
+    once search reads from pdf_search_fts_de, every writer has to maintain
+    it, and warm_cli / a corpus warmed offline is exactly the process that
+    otherwise writes page_text without ever touching the mirror."""
+
+    def test_plain_cache_writer_keeps_the_mirror_complete(self, tmp_path):
+        # 1. A cache with [fts] language = "de" creates the mirror tables.
+        PDFCache(cache_dir=tmp_path, ttl_hours=1, fts_language="de")
+
+        # 2. A DIFFERENT, plain cache (no fts_language -- e.g. pdf-mcp-warm
+        # run under a config that hadn't set [fts] language yet) writes a
+        # new document into the SAME cache_dir.
+        plain = PDFCache(cache_dir=tmp_path, ttl_hours=1)
+        assert plain._de_tables_exist is True  # sees the mirror already exists
+        path = _touch_pdf(tmp_path, "warmed_plain.pdf")
+        plain.save_pages_text(
+            path, {0: "Die Kündigung war wirksam.", 1: "Urlaubsanspruch"}
+        )
+
+        # 3. Re-opening with fts_language="de" must see it immediately --
+        # both because `plain` maintained the mirror directly (item 4) and
+        # because the open-time sync is a safety net either way.
+        de_cache = PDFCache(cache_dir=tmp_path, ttl_hours=1, fts_language="de")
+        results = de_cache.search_fts(path, "kündigen", 10, 100)
+        assert [r["page"] for r in results] == [1]
+        assert de_cache.get_fts_page_counts(path, "kündigen") == {0: 1}
+
+    def test_open_time_sync_backfills_a_document_written_before_de_mode(self, tmp_path):
+        # A document fully warmed BEFORE the mirror tables even exist.
+        plain = PDFCache(cache_dir=tmp_path, ttl_hours=1)
+        path = _touch_pdf(tmp_path, "warmed_before_de.pdf")
+        plain.save_page_text(path, 0, "Die Kündigung des Vertrags war wirksam.")
+
+        # First "de" open must backfill it (not just documents that come
+        # in after).
+        de_cache = PDFCache(cache_dir=tmp_path, ttl_hours=1, fts_language="de")
+        assert [r["page"] for r in de_cache.search_fts(path, "kündigen", 10, 100)] == [
+            1
+        ]
+
+        # A second "de" open must not duplicate the now-synced rows.
+        de_cache2 = PDFCache(cache_dir=tmp_path, ttl_hours=1, fts_language="de")
+        assert de_cache2.get_fts_page_counts(path, "kündigen") == {0: 1}
+
+    def test_stale_mirror_rows_are_dropped_on_reinvalidate(self, tmp_path):
+        de_cache = PDFCache(cache_dir=tmp_path, ttl_hours=1, fts_language="de")
+        path = _touch_pdf(tmp_path, "shrinks.pdf")
+        de_cache.save_pages_text(
+            path,
+            {0: "Die Kündigung war wirksam.", 1: "Kündigung erneut erwähnt."},
+        )
+        assert de_cache.get_fts_page_counts(path, "kündigen") == {0: 1, 1: 1}
+
+        de_cache._invalidate_file(path)
+        de_cache.save_page_text(path, 0, "Urlaubsanspruch ohne Bezug.")
+
+        # Page 1's mirror row must be gone, not just shadowed -- confirmed
+        # via a fresh open, which runs the count-based sync and would
+        # otherwise re-insert a stale row.
+        de_cache2 = PDFCache(cache_dir=tmp_path, ttl_hours=1, fts_language="de")
+        assert de_cache2.get_fts_page_counts(path, "kündigen") == {}
+
+    def test_blank_page_does_not_force_a_re_sync_on_every_open(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: _sync_de_tables used to filter out empty-text pages
+        when re-inserting into the mirror, but the writers (save_page_text
+        et al.) insert one mirror row per page_text row REGARDLESS of
+        whether the text is empty. A document with even one blank page
+        (common: an image-only page ahead of any OCR pass) therefore never
+        reached page_count == de_page_count, and was deleted + fully
+        re-stemmed on every single "de" cache open, forever."""
+        plain = PDFCache(cache_dir=tmp_path, ttl_hours=1)
+        path = _touch_pdf(tmp_path, "with_blank_page.pdf")
+        plain.save_pages_text(path, {0: "Die Kündigung war wirksam.", 1: ""})
+
+        # First "de" open backfills it, blank page included.
+        PDFCache(cache_dir=tmp_path, ttl_hours=1, fts_language="de")
+
+        import pdf_mcp.cache as cache_mod
+
+        original_normalize = cache_mod._german_normalize
+        calls: list[str] = []
+
+        def _spy(text: str) -> str:
+            calls.append(text)
+            return original_normalize(text)
+
+        monkeypatch.setattr(cache_mod, "_german_normalize", _spy)
+
+        # A second "de" open must find the document already in sync and do
+        # no re-stemming work at all for it.
+        de_cache2 = PDFCache(cache_dir=tmp_path, ttl_hours=1, fts_language="de")
+        assert calls == []
+        assert [r["page"] for r in de_cache2.search_fts(path, "kündigen", 10, 100)] == [
+            1
+        ]
+
+    def test_partial_mirror_falls_back_to_stemming_for_that_query(
+        self, de_cache, tmp_path
+    ):
+        """A mirror row can go missing for one page of an otherwise-synced
+        document mid-session (e.g. a concurrent writer with a stale
+        _de_tables_exist deleting and only partially re-inserting). Both
+        search_fts (via _build_temp_page_fts) and get_fts_page_counts must
+        detect the count mismatch against page_text and fall back to
+        stemming directly, not silently search/count only the remaining
+        rows."""
+        path = _touch_pdf(tmp_path, "partial_mirror.pdf")
+        de_cache.save_pages_text(
+            path,
+            {0: "Die Kündigung war wirksam.", 1: "Kündigung erneut erwähnt."},
+        )
+        with de_cache._connect() as conn:
+            conn.execute(
+                "DELETE FROM pdf_search_fts_de WHERE file_path = ? AND page_num = 1",
+                (path,),
+            )
+
+        results = de_cache.search_fts(path, "kündigen", 10, 100)
+        assert sorted(r["page"] for r in results) == [1, 2]
+        assert de_cache.get_fts_page_counts(path, "kündigen") == {0: 1, 1: 1}

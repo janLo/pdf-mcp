@@ -23,3 +23,15 @@ def test_german_mode_beats_porter_default_on_inflected_and_spelling_queries():
     assert de["per_query"]["kündigen"]["recall"] == 1.0
     assert de["per_query"]["Kuendigung"]["recall"] == 1.0
     assert de["per_query"]["Strasse"]["recall"] == 1.0
+
+    # Numbers and statute citations (digit-dropping tokenizer regression):
+    # a numeric or mixed alphanumeric query must still hit its page under
+    # "de" mode -- porter (English) can already match these literally, so
+    # only "de" recall is asserted here.
+    assert de["per_query"]["626"]["recall"] == 1.0
+    assert de["per_query"]["§ 626 BGB"]["recall"] == 1.0
+    assert de["per_query"]["2023"]["recall"] == 1.0
+
+    # Multi-word query: AND-semantics must still exclude the distractor
+    # page that only shares one of the two words.
+    assert de["per_query"]["befristeter Arbeitsvertrag"]["recall"] == 1.0
