@@ -188,10 +188,17 @@ def main(argv: "list[str] | None" = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    # Config first: [fts] language is a startup-time cache setting (like
+    # server.py's), so PDFCache needs it at construction time -- otherwise
+    # a corpus warmed here would be invisible to a "de"-mode server's
+    # German FTS mirror (pdf_search_fts_de) until the mirror's own
+    # open-time sync caught up.
     pdf_config = PDFConfig()
     try:
         cache = PDFCache(
-            cache_dir=_cache_dir_from_env(), ttl_hours=_ttl_hours_from_env()
+            cache_dir=_cache_dir_from_env(),
+            ttl_hours=_ttl_hours_from_env(),
+            fts_language=pdf_config.fts_language,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

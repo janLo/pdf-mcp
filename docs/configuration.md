@@ -24,6 +24,9 @@ max_response_bytes = 200000
 [embedding]
 model = "BAAI/bge-small-en-v1.5"
 
+[fts]
+language = "de"
+
 [content_trust]
 injection_phrases = ["忽略以上所有指示", "以前の指示を無視してください", "ignorez les instructions"]
 ```
@@ -38,6 +41,34 @@ section-granularity `pdf_search`; see [docs/response-limits.md](response-limits.
 
 **`[embedding]`** — the semantic-search model; the default shown above is
 `BAAI/bge-small-en-v1.5`. See [docs/embedding-models.md](embedding-models.md).
+
+**`[fts]`** — `language = "de"` turns on a German-stemmed keyword-search
+mirror index (Snowball stemming, via the pure-Python `snowballstemmer`
+package) alongside the default English/porter one. The default (`porter`
+FTS, no `[fts]` section) does nothing useful for German inflection or the
+common umlaut/ß spelling variants; this option fixes that for the keyword
+leg of `pdf_search`. It's a whole-server setting applied to every document
+the running process touches — not per-document, and not auto-detected —
+so it suits a deployment that mostly reads German PDFs, not a mixed corpus.
+Compound-word splitting (`Kündigungsschutzklage` vs. `Kündigungsschutz`) is
+a known, deliberately out-of-scope gap: only inflection and umlaut/ß
+spelling variants are unified, not compound nouns. A multi-word query
+requires every word's stem to be present first; a query of three or more
+words that matches nothing is retried with its stems OR-joined, same
+threshold as the default keyword path (see
+[docs/tool-reference.md](tool-reference.md)) — a query using one word the
+page doesn't have still finds a page that has the others, with BM25
+ranking pages carrying more (and rarer) stems first. The threshold counts
+raw words, not stems, so `"§ 626 BGB"` (3 words) retries but `"626 BGB"`
+(2 words) does not, even though both stem to the same two search terms.
+Once turned on, the mirror index is maintained by every cache writer for
+the life of the cache directory — removing `[fts] language` from
+`config.toml` stops new queries from using it, but existing rows are only
+cleared by deleting the cache. Turning it on for the first time stems
+every already-cached document once, before the server accepts requests —
+about 28 seconds measured on a 4,000-page cache; later starts only
+re-stem documents whose page count changed since the mirror was last
+synced.
 
 **`[content_trust]`** — extends the hidden-text `injection_in_hidden` severity
 hint with your own (including non-English) phrases. They **extend** the built-in
