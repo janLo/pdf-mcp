@@ -58,9 +58,11 @@ Known gotchas we've already hit:
 - **`mixedbread-ai/mxbai-embed-large-v1`** (640 MB, 1024-dim) — not run against the live corpus.
 - **`BAAI/bge-large-en-v1.5`** (1.2 GB, 1024-dim) — not run against the live corpus.
 - **`intfloat/multilingual-e5-small`** (384-dim, 100+ languages) — not run against the live corpus.
-- **`intfloat/multilingual-e5-large`** (2.2 GB, 1024-dim, 100+ languages) — not run against the live corpus.
+- **`intfloat/multilingual-e5-large`** (2.2 GB, 1024-dim, 100+ languages) — **run against a German corpus**: MRR 0.274 vs bge-small's 0.172 on natural-language German queries (+0.102), but 490-page cold embed took ~17 min on CPU and warm query p50 landed at ~1.7x bge-small's, just over this repo's own 1.5x latency gate. Run raw (no `query:`/`passage:` prefix — the production path applies none). See [`german_embedding_results.md`](../benchmark_data/german_embedding_results.md).
+- **`jinaai/jina-embeddings-v2-base-de`** (320 MB, 768-dim, German) — **fails to load**: `onnxruntime.capi.onnxruntime_pybind11_state.Fail` during session init (a `SimplifiedLayerNormFusion` graph-optimizer pass chokes on this model's exported graph), reproducible standalone, not a benchmark-harness artifact. Same failure class as the two gotchas above — a tooling incompatibility with this repo's pinned `onnxruntime`, not a quality verdict.
+- **`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`** / **`-mpnet-base-v2`** — run against the same German corpus; both score *below* bge-small (0.143 and 0.123 respectively) despite being multilingual. Bigger/multilingual doesn't automatically win here, the same conclusion the English large-model screen already reached.
 
-If you need any of these (long contexts, multilingual, larger English models), pin via BYOM and validate the retrieval yourself before depending on it.
+If you need any of these (long contexts, multilingual, larger English models), pin via BYOM and validate the retrieval yourself before depending on it. For non-English corpora specifically, see [`german_embedding_results.md`](../benchmark_data/german_embedding_results.md) — no locally-runnable model tested there is a clean drop-in for German yet.
 
 ---
 
