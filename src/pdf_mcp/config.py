@@ -267,10 +267,11 @@ class PDFConfig:
                 "resolves to a public address -- this guards against "
                 "pointing pdf-mcp at a public API by accident, not a "
                 "security boundary (see docs/configuration.md). Point it "
-                "at a loopback, RFC 1918/link-local, or otherwise "
+                "at a loopback, RFC 1918/link-local/CGNAT, or otherwise "
                 "private-resolving address -- 'localhost', "
-                "'host.docker.internal', a Docker/compose service name, or "
-                "a LAN hostname/IP all resolve as private and are accepted."
+                "'host.docker.internal', a Docker/compose service name, a "
+                "LAN hostname/IP, or a Tailscale address all resolve as "
+                "private and are accepted."
             )
 
         model = section.get("model")
@@ -336,6 +337,29 @@ class PDFConfig:
             timeout=float(timeout),
             batch_size=batch_size,
             max_concurrency=max_concurrency,
+        )
+
+    @property
+    def fts_language(self) -> str | None:
+        """``[fts] language``: None (default, porter/English stemming) or
+        "de" for the German-stemmed FTS mirror index (cache.py's
+        pdf_search_fts_de / pdf_section_fts_de tables).
+
+        This is a whole-cache setting, not per-document: it applies to every
+        PDF the running server touches, the same way `embedding_model` does.
+        A user who mostly reads German documents turns it on once; mixed
+        English/German corpora are not distinguished (that would need
+        per-document language detection, which this option deliberately
+        does not attempt).
+        """
+        value = self._data.get("fts", {}).get("language")
+        if value is None:
+            return None
+        if value == "de":
+            return "de"
+        raise ValueError(
+            f"[fts] language must be 'de' (or omitted) in {self._config_path}, "
+            f"got {value!r}"
         )
 
     @property

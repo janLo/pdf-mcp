@@ -60,12 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `base_url`'s hostname must resolve to a private/loopback address (reusing
   `url_fetcher.py`'s `URLFetcher._is_blocked_ip` the other way round) --
-  `localhost`, `host.docker.internal`, a Docker/compose service name, and
-  LAN hostnames/IPs all resolve as private and are accepted. This is a
-  guard against pointing pdf-mcp at a public API by accident, not a
-  security boundary (it won't catch a tunnel or VPN routing a private
-  address to a public host). See `docs/configuration.md` for the full
-  rationale.
+  `localhost`, `host.docker.internal`, a Docker/compose service name, a LAN
+  hostname/IP, and a Tailscale (or other CGNAT, `100.64.0.0/10`) address all
+  resolve as private and are accepted. This is a guard against pointing
+  pdf-mcp at a public API by accident, not a security boundary (it won't
+  catch a tunnel or VPN routing a private address to a public host). See
+  `docs/configuration.md` for the full rationale.
 
 - **`pdf-mcp-warm`: an offline entry point that warms a whole corpus to
   completion, outside any MCP client.** `pdf_corpus_warm` (the tool) caps
@@ -134,6 +134,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Turn it off in the extension settings, with `PDF_MCP_UPDATE_CHECK=0`, or
   with `[updates] check = false`. pip and uvx installs never check.
 
+- **German-aware keyword search (opt-in).** `[fts] language = "de"` in
+  `config.toml` turns on a German-stemmed mirror index for keyword and hybrid
+  search, so a query like `kündigen` now also finds pages using `Kündigung`
+  or the common ASCII-transliteration spellings (`Kuendigung`, `Strasse` for
+  `Straße`), none of which the default English/porter index could match.
+  Turning it on for the first time stems the whole existing cache once,
+  before the server accepts requests. Off by default; see
+  [docs/configuration.md](docs/configuration.md).
+  ([#43](https://github.com/jztan/pdf-mcp/issues/43))
+
 - **OCR with nothing to install (Claude Desktop bundle).** On Windows and
   Macs, the first OCR call on a computer with no Tesseract downloads a
   portable, English-only Tesseract (about 14 MB), checks it against a
@@ -185,9 +195,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   URL longer than the widening limit), and wrong or missing markers from
   283 to 0.
 
+### Security
+
+- `100.64.0.0/10` (CGNAT, also used by Tailscale) joined the URL fetcher's
+  SSRF deny list, alongside RFC 1918/loopback/link-local. It also feeds the
+  `[embedding].base_url` private-address check above, so a Tailscale-reached
+  endpoint is treated the same as any other private address.
+
 ### Contributors
 
-- @janLo — `pdf-mcp-warm` offline prewarm, section-index warming in `pdf_corpus_warm`, and a core-scaled OCR/render worker pool, benchmarked on a 24-thread host ([#41](https://github.com/jztan/pdf-mcp/pull/41))
+- @janLo — `pdf-mcp-warm` offline prewarm, section-index warming in `pdf_corpus_warm`, and a core-scaled OCR/render worker pool, benchmarked on a 24-thread host ([#41](https://github.com/jztan/pdf-mcp/pull/41)), and opt-in German-aware keyword search ([#44](https://github.com/jztan/pdf-mcp/pull/44))
 
 ## [3.2.0] - 2026-09-12
 ### Added

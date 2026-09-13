@@ -211,6 +211,44 @@ class TestMainEndToEnd:
         cache = PDFCache(cache_dir=cache_dir, ttl_hours=1)
         assert cache.get_section_fts_coverage(sample_pdf_with_toc_sections) == 0
 
+    def test_passes_fts_language_from_config_to_the_cache(
+        self, corpus_dir, tmp_path, monkeypatch
+    ):
+        """A corpus warmed with `pdf-mcp-warm` must land in the German FTS
+        mirror too when [fts] language = "de" is set, or a doc warmed
+        offline returns empty page_match_counts / no keyword hits under a
+        "de"-mode server despite being fully cached. main() reads
+        fts_language off the SAME PDFConfig it already builds (for
+        embedding_model / check_path) and passes it to PDFCache, exactly
+        like server.py does at startup."""
+
+        class _StubConfig:
+            embedding_model = "unused"
+            fts_language = "de"
+
+            @staticmethod
+            def check_path(path: str) -> None:
+                return None
+
+        monkeypatch.setattr(warm_cli, "PDFConfig", _StubConfig)
+        cache_dir = tmp_path / "cache"
+        monkeypatch.setenv("PDF_MCP_CACHE_DIR", str(cache_dir))
+
+        rc = warm_cli.main([str(corpus_dir), "--no-embeddings", "--no-sections"])
+        assert rc == 0
+
+        from pdf_mcp.cache import PDFCache
+
+        # A plain (non-"de") re-open sees the mirror table already exists
+        # AND already has rows for the warmed corpus -- i.e. warm_cli's own
+        # PDFCache instance wrote it directly, not something a later "de"
+        # open's sync backfilled just now.
+        plain = PDFCache(cache_dir=cache_dir, ttl_hours=1)
+        assert plain._de_tables_exist is True
+        with plain._connect() as conn:
+            (count,) = conn.execute("SELECT COUNT(*) FROM pdf_search_fts_de").fetchone()
+        assert count > 0
+
 
 class TestMainRemoteBackend:
     """PR #47 review follow-up: pdf-mcp-warm built its own PDFConfig but

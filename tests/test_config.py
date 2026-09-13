@@ -358,6 +358,26 @@ class TestEmbeddingBackend:
         assert spec is not None
         assert spec.base_url == "http://gpu-box.lan:8000/v1"
 
+    def test_openai_backend_accepts_cgnat_resolving_hostname(
+        self, tmp_path, monkeypatch
+    ):
+        """Covers the Tailscale case jztan flagged -- it hands out IPv4
+        addresses from 100.64.0.0/10 (CGNAT space), which must pass the
+        same as any other private-resolving hostname."""
+        monkeypatch.setattr(
+            "socket.getaddrinfo",
+            lambda *a, **k: [(2, 1, 6, "", ("100.100.100.100", 0))],
+        )
+        config = self._write(
+            tmp_path,
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://gpu-box.tailnet.ts.net:8000/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+        )
+        spec = config.remote_embedding_spec
+        assert spec is not None
+        assert spec.base_url == "http://gpu-box.tailnet.ts.net:8000/v1"
+
     def test_openai_backend_accepts_loopback_literal(self, tmp_path):
         config = self._write(
             tmp_path,
@@ -570,3 +590,19 @@ class TestDisableRemoteEmbeddingBackend:
         fresh = PDFConfig(config_path=cfg_path)
         assert fresh.embedding_backend == "openai"
         assert fresh.remote_embedding_spec is not None
+
+
+class TestFtsLanguageConfig:
+    def test_absent_is_none(self, tmp_path):
+        assert PDFConfig(config_path=tmp_path / "none.toml").fts_language is None
+
+    def test_de_is_read(self, tmp_path):
+        cfg = tmp_path / "config.toml"
+        cfg.write_text('[fts]\nlanguage = "de"\n', encoding="utf-8")
+        assert PDFConfig(config_path=cfg).fts_language == "de"
+
+    def test_unsupported_value_raises(self, tmp_path):
+        cfg = tmp_path / "config.toml"
+        cfg.write_text('[fts]\nlanguage = "fr"\n', encoding="utf-8")
+        with pytest.raises(ValueError, match=r"\[fts\] language"):
+            PDFConfig(config_path=cfg).fts_language
