@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and writes to the exact cache the server reads — already-cached
   documents are free, so re-running after an interrupt resumes rather
   than redoing work. See
-  [docs/configuration.md](docs/configuration.md#offline-prewarm-pdf-mcp-warm).
+  [docs/configuration.md](docs/configuration.md#offline-prewarm-pdf-mcp-warm) ([#41](https://github.com/jztan/pdf-mcp/pull/41)).
 
 - **`pdf_corpus_warm(paths, sections=True)`: warm the section-granularity
   search index ahead of query time.** Previously, a corpus warmed with
@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off joins `unprocessed` (`warm_complete: false`) instead of running
   past `budget_seconds`, and finishes on a later call. See
   [docs/tool-reference.md](docs/tool-reference.md#pdf_corpus_warm) and
-  [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md).
+  [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md) ([#41](https://github.com/jztan/pdf-mcp/pull/41)).
 
 - **OCR and page rendering now use up to 16 parallel workers on many-core
   hosts, up from a flat cap of 8.** Re-measured on a 24-thread host: OCR
@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's total logical CPUs, not a cgroup quota, so this can double
   oversubscription under `docker run --cpus=N`; set
   `PDF_MCP_MAX_WORKERS` explicitly there. See
-  [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md).
+  [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md) ([#41](https://github.com/jztan/pdf-mcp/pull/41)).
 
 - **One-click install for Claude Desktop.** Every release now ships a
   `pdf-mcp-<version>.mcpb` bundle. Download it and drag it onto Claude
@@ -126,6 +126,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mid-word cuts in `mode="auto"` snippets fell from 135 of 425 to 1 (a
   URL longer than the widening limit), and wrong or missing markers from
   283 to 0.
+
+### Contributors
+
+- @janLo — `pdf-mcp-warm` offline prewarm, section-index warming in `pdf_corpus_warm`, and a core-scaled OCR/render worker pool, benchmarked on a 24-thread host ([#41](https://github.com/jztan/pdf-mcp/pull/41))
 
 ## [3.2.0] - 2026-09-12
 ### Added
