@@ -204,6 +204,49 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    if args.embeddings and args.model is None:
+        # Wire up [embedding].backend = "openai" exactly as server.py does
+        # at startup -- without this, a configured remote backend was
+        # silently never used here: pdf_config.embedding_model always
+        # names the bare fastembed model (see its docstring), so
+        # embedder.encode()/check_available() would just run local
+        # fastembed with no error and no warning that the endpoint in
+        # config.toml was never contacted. Skipped when --model overrides
+        # the model name explicitly -- that flag means "use this fastembed
+        # model locally", a different knob from the configured backend,
+        # and must never get silently redirected to an endpoint serving a
+        # different model. Also skipped entirely when --no-embeddings is
+        # passed: nothing here will call embedder.encode() this run.
+        from . import remote_embedding_check
+
+        try:
+            # remote_embedding_spec (read inside configure_remote_backend)
+            # validates the whole [embedding] section and raises ValueError
+            # on a bad base_url/model/api_key_env/... -- catch it here so a
+            # misconfigured openai backend gets this file's usual
+            # "error: ..." + exit 1 treatment instead of a raw traceback
+            # (every other config error in this function is handled the
+            # same way: PDFCache construction above, check_available below).
+            setup = remote_embedding_check.configure_remote_backend(pdf_config)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if setup.spec is not None:
+            assert setup.check_result is not None  # spec implies a check ran
+            if setup.active:
+                print(
+                    "remote embedding backend passed the startup safety "
+                    f"check: {setup.check_result.reason}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "warning: remote embedding backend failed the startup "
+                    f"safety check: {setup.check_result.reason}. Falling "
+                    "back to local fastembed.",
+                    file=sys.stderr,
+                )
+
     model_name = args.model or pdf_config.embedding_model
     embed_fn = None
     if args.embeddings:

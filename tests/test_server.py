@@ -322,6 +322,49 @@ class TestPdfSearchModes:
         lens_200 = [len(m["excerpt"]) for m in result_200["matches"]]
         assert max(lens_50) <= max(lens_200)
 
+    def test_semantic_mode_returns_inline_error_on_encode_failure(
+        self, sample_pdf, isolated_server
+    ):
+        """mode='semantic' has no keyword fallback (unlike 'auto'), so a
+        remote backend dying mid-session (PR #47 review item 4) must
+        surface as an inline {"error": ...}, not an uncaught
+        RemoteEmbeddingError."""
+        from pdf_mcp.remote_embedder import RemoteEmbeddingError
+
+        with (
+            patch("pdf_mcp.embedder.check_available"),
+            patch(
+                "pdf_mcp.embedder.encode",
+                side_effect=RemoteEmbeddingError("endpoint unreachable"),
+            ),
+        ):
+            result = pdf_search(sample_pdf, "test", mode="semantic")
+
+        assert "error" in result
+        assert "endpoint unreachable" in result["error"]
+        assert result.get("query") == "test"
+
+    def test_semantic_mode_returns_inline_error_on_encode_query_failure(
+        self, sample_pdf, isolated_server
+    ):
+        """Same as above, but the failure happens in encode_query() after
+        page embeddings are already cached."""
+        from pdf_mcp.remote_embedder import RemoteEmbeddingError
+
+        encode, _ = self._make_encode()
+        with (
+            patch("pdf_mcp.embedder.check_available"),
+            patch("pdf_mcp.embedder.encode", encode),
+            patch(
+                "pdf_mcp.embedder.encode_query",
+                side_effect=RemoteEmbeddingError("endpoint unreachable"),
+            ),
+        ):
+            result = pdf_search(sample_pdf, "test", mode="semantic")
+
+        assert "error" in result
+        assert "endpoint unreachable" in result["error"]
+
     # ── mode="auto" hybrid ───────────────────────────────────────────────
 
     def test_auto_mode_no_fastembed_returns_keyword(self, sample_pdf, isolated_server):
@@ -4685,6 +4728,44 @@ class TestPdfCorpusSearchSemanticAuto:
         monkeypatch.setattr(emb, "check_available", boom)
         result = pdf_corpus_search(str(corpus_dir), "budget", mode="semantic")
         assert "error" in result
+
+    def test_semantic_mode_returns_inline_error_when_encode_query_dies(
+        self, corpus_dir, isolated_server, monkeypatch
+    ):
+        """mode='semantic' has no keyword fallback, so a remote backend
+        dying mid-session (PR #47 review item 4) must surface as an inline
+        {"error": ...} rather than an uncaught RemoteEmbeddingError."""
+        import pdf_mcp.embedder as emb
+        from pdf_mcp.remote_embedder import RemoteEmbeddingError
+
+        def boom(text, model):
+            raise RemoteEmbeddingError("endpoint unreachable")
+
+        monkeypatch.setattr(emb, "check_available", lambda model: None)
+        monkeypatch.setattr(emb, "encode_query", boom)
+        result = pdf_corpus_search(str(corpus_dir), "budget", mode="semantic")
+        assert "error" in result
+        assert "endpoint unreachable" in result["error"]
+
+    def test_auto_mode_degrades_to_keyword_when_encode_query_dies(
+        self, corpus_dir, isolated_server, monkeypatch
+    ):
+        """mode='auto' falls back to the keyword-only response (like a
+        missing fastembed) instead of raising, when encode_query() fails
+        mid-session."""
+        import pdf_mcp.embedder as emb
+        from pdf_mcp.remote_embedder import RemoteEmbeddingError
+
+        self._fake_embedder(monkeypatch)
+
+        def boom(text, model):
+            raise RemoteEmbeddingError("endpoint unreachable")
+
+        monkeypatch.setattr(emb, "encode_query", boom)
+        result = pdf_corpus_search(str(corpus_dir), "budget", mode="auto")
+        assert result["search_mode"] == "keyword"
+        assert result["semantic_unavailable"] is True
+        assert "endpoint unreachable" in result["semantic_unavailable_reason"]
 
     def test_hybrid_carries_doc_arm_fields(
         self, corpus_dir, isolated_server, monkeypatch

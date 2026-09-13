@@ -46,7 +46,7 @@ Many responses also include an inline `content_warning` field as a runtime remin
 When a tool receives an `https://` URL, the server:
 
 1. Rejects any non-HTTPS scheme.
-2. Resolves the hostname once per redirect hop and validates every resolved address against a deny list (loopback, RFC 1918, link-local, IPv4-mapped IPv6, AWS IMDS over IPv6, IPv6 ULA, NAT64 well-known, IPv6 documentation, and a few more).
+2. Resolves the hostname once per redirect hop and validates every resolved address against a deny list (loopback, RFC 1918, CGNAT (`100.64.0.0/10`, also used by Tailscale), link-local, IPv4-mapped IPv6, AWS IMDS over IPv6, IPv6 ULA, NAT64 well-known, IPv6 documentation, and a few more).
 3. **Pins** the validated IP for the actual TCP connect (with the original hostname preserved in the `Host` header and TLS SNI) so a hostile resolver cannot return a different address between validation and connect (classic DNS rebinding).
 4. Rejects non-PDF `Content-Type` responses (`text/*`, `application/json`, `application/xml`, `application/xhtml+xml`, `image/*`, `audio/*`, `video/*`, `multipart/*`) **before** buffering any body bytes.
 5. Falls back to magic-byte verification (first 4 bytes `%PDF`) whenever the `Content-Type` header does not contain `"pdf"` — covers `application/octet-stream`, missing headers, and any non-deny-listed type that isn't explicitly `application/pdf`.
@@ -1021,7 +1021,9 @@ Reports which optional features are installed and which configuration values are
   - `extraction.ocr`: `{available, description}`. `available` is re-checked per call: `true` when Tesseract is on `PATH` or in its standard install folder (`%ProgramFiles%\Tesseract-OCR` on Windows, `/opt/homebrew/bin` or `/usr/local/bin` on macOS). OCR is opt-in (`pdf_read_pages(ocr=True)`); no tool runs it automatically, and the description says so.
   - `search.modes_available` (array) — always includes `"keyword"`; includes `"semantic"` and `"auto"` only when `fastembed` is installed and the configured embedding model is valid.
   - `search.default_mode` (string) — `"auto"`.
-  - `search.embedding_model` (string, conditional) — present **only** when semantic search is available; omitted otherwise.
+  - `search.embedding_model` (string, conditional) — present **only** when semantic search is available; omitted otherwise. Always the bare fastembed model name (e.g. `BAAI/bge-small-en-v1.5`), even under the remote (`openai`) backend: a verified remote endpoint shares the same vector-cache identity as local fastembed rather than a namespaced one, see `docs/configuration.md`.
+  - `search.embedding_backend` (string, conditional) — `"fastembed"` or `"openai"`; present under the same condition as `embedding_model`. See `docs/configuration.md` for `[embedding].backend`.
+  - `search.embedding_endpoint` (string, conditional) — `host[:port]` of the remote endpoint; present only when `embedding_backend` is `"openai"`. Never includes credentials or userinfo.
   - `corpus.tools` (array) — the multi-document tools (`pdf_corpus_warm`, `pdf_corpus_overview`, `pdf_corpus_search`).
   - `corpus.max_files` (int) — corpus size cap (100).
   - `corpus.budget_seconds_range` (array) — clamp range for `budget_seconds` on the corpus tools (`[1, 300]`).

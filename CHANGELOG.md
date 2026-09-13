@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Remote-served bge-small embedding backend.** `[embedding].backend =
+  "openai"` points semantic search at a self-hosted, OpenAI-compatible
+  `/v1/embeddings` HTTP endpoint (ollama, lemonade, llama-server, vLLM,
+  ...) instead of the bundled fastembed/onnxruntime path. This is scoped
+  narrowly and deliberately to serving BAAI/bge-small-en-v1.5 remotely --
+  the same model fastembed uses by default -- since the win being targeted
+  is compute backend (e.g. a Vulkan iGPU path onnxruntime can't reach on
+  some hardware), not a different model. It is not a general "bring your
+  own embedding model" feature: `low_confidence` and the hybrid RRF fusion
+  score are tuned to bge-small's cosine distribution, and a different
+  model's distribution would silently throw them off with no error, so
+  arbitrary model choice is being handled separately (see
+  [issue #46](https://github.com/jztan/pdf-mcp/issues/46)) alongside the
+  safety check that guards against it. Configure with `base_url`
+  (required), `model` (required; informational only in this version -- it
+  does not change how text is encoded and is not part of the vector-cache
+  identity), `api_key_env`, `timeout`, `batch_size`, and
+  `max_concurrency`; `server_info` reports `embedding_backend` and
+  `embedding_endpoint` (host:port only, never a credential) once the
+  backend loads successfully. See `docs/configuration.md` for the full key
+  reference.
+
+  A verified remote endpoint shares the SAME vector-cache rows as local
+  fastembed -- `embedding_model` is always the bare `BAAI/bge-small-en-v1.5`
+  name regardless of backend -- so a CPU fallback, a different `base_url`,
+  or `127.0.0.1` vs `localhost` all read the same cached vectors instead of
+  re-embedding everything. That is what makes the startup safety check
+  (`src/pdf_mcp/remote_embedding_check.py`) mandatory rather than optional:
+  pdf-mcp cannot see which model actually sits behind `base_url`, so once
+  at startup (a single request, one attempt -- it fails fast on an
+  unreachable endpoint rather than blocking startup) it embeds a handful of
+  fixed reference sentences through the configured endpoint and compares
+  them by cosine similarity to stored local-fastembed bge-small reference
+  vectors (`src/pdf_mcp/bge_small_reference.json`). If the minimum
+  per-sentence cosine drops below 0.999, the server logs a warning and
+  falls back to local fastembed for the rest of the process instead of
+  silently serving mismatched vectors into that shared cache. If the
+  endpoint instead dies mid-session, `pdf_search`/`pdf_corpus_search`
+  return an inline `{"error": ...}` (or degrade to keyword-only under
+  `mode="auto"`) rather than raising.
+
+  Measured against a real quantized deployment (Q8_0 GGUF over
+  `llama-server` on Vulkan): cosine parity against local fastembed is
+  0.99989 minimum / 0.99993 mean over 36 real page-chunk passages
+  (`benchmark_data/bge_small_cosine_parity_results.md`), and throughput on
+  600 real ~300-token warm chunks from `pages/corpus/*.pdf` is 4.2-4.8x
+  fastembed CPU depending on concurrency
+  (`benchmark_data/bge_small_throughput_results.md`).
+
+  `base_url`'s hostname must resolve to a private/loopback address (reusing
+  `url_fetcher.py`'s `URLFetcher._is_blocked_ip` the other way round) --
+  `localhost`, `host.docker.internal`, a Docker/compose service name, a LAN
+  hostname/IP, and a Tailscale (or other CGNAT, `100.64.0.0/10`) address all
+  resolve as private and are accepted. This is a guard against pointing
+  pdf-mcp at a public API by accident, not a security boundary (it won't
+  catch a tunnel or VPN routing a private address to a public host). See
+  `docs/configuration.md` for the full rationale.
+
 - **`pdf-mcp-warm`: an offline entry point that warms a whole corpus to
   completion, outside any MCP client.** `pdf_corpus_warm` (the tool) caps
   at 100 files and 300 seconds per call by design, so a folder that does
@@ -136,6 +194,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mid-word cuts in `mode="auto"` snippets fell from 135 of 425 to 1 (a
   URL longer than the widening limit), and wrong or missing markers from
   283 to 0.
+
+### Security
+
+- `100.64.0.0/10` (CGNAT, also used by Tailscale) joined the URL fetcher's
+  SSRF deny list, alongside RFC 1918/loopback/link-local. It also feeds the
+  `[embedding].base_url` private-address check above, so a Tailscale-reached
+  endpoint is treated the same as any other private address.
 
 ### Contributors
 
