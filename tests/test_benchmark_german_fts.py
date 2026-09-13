@@ -35,3 +35,11 @@ def test_german_mode_beats_porter_default_on_inflected_and_spelling_queries():
     # Multi-word query: AND-semantics must still exclude the distractor
     # page that only shares one of the two words.
     assert de["per_query"]["befristeter Arbeitsvertrag"]["recall"] == 1.0
+
+    # OR-fallback regression (PR #44 round 2): no page has both "622" and
+    # "bgb", so only the OR retry finds the true citation.
+    assert de["per_query"]["§ 622 BGB"]["recall"] == 1.0
+
+    # "626" must still discriminate from "1626" now that a page citing
+    # "§ 1626" (page 12) is also in the corpus.
+    assert de["per_query"]["626"]["returned"] == [8]

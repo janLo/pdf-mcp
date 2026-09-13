@@ -316,6 +316,34 @@ def _escape_fts5_query_de(query: str) -> str:
     return " ".join(f'"{stem}"' for stem in normalized.split())
 
 
+def _fts5_or_fallback_de(query: str) -> str | None:
+    """OR-joined German-stem variant of `_escape_fts5_query_de`.
+
+    The German twin of `_fts5_or_fallback`: same retry, but built from
+    stems (like `_escape_fts5_query_de`) instead of raw tokens, so it stays
+    consistent with whatever tokenization `_german_normalize` applied at
+    index time.
+
+    Qualification is delegated to `_fts5_or_fallback` itself (its
+    "3+ whitespace tokens" rule) rather than re-derived from the stem
+    count, so "de" qualifies for the retry in exactly the same cases the
+    default path does -- not more, not fewer. That matters because the two
+    counts can differ: "§ 626 BGB" is 3 raw tokens but only 2 German stems
+    (`_german_normalize` drops "§" as a separator). A stem-count threshold
+    would silently exclude that exact query from the retry.
+
+    Returns None when the query doesn't qualify (delegated check) or when
+    it stems down to fewer than 2 terms (the OR form would be identical to
+    the AND form -- nothing to gain from a second MATCH).
+    """
+    if _fts5_or_fallback(query) is None:
+        return None
+    stems = _german_normalize(query).split()
+    if len(stems) < 2:
+        return None
+    return " OR ".join(f'"{stem}"' for stem in stems)
+
+
 def _get_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     """Return column names for a table, or empty set if the table does not exist."""
     cursor = conn.execute(f"PRAGMA table_info({table_name})")
@@ -2765,20 +2793,36 @@ class PDFCache:
 
         if self.fts_language == "de":
             escaped = _escape_fts5_query_de(query)
+            sql = (
+                "SELECT page_num, -bm25(doc_fts)"
+                " FROM doc_fts"
+                " WHERE doc_fts MATCH ?"
+                " ORDER BY bm25(doc_fts) LIMIT ?"
+            )
             with self._connect() as conn:
                 try:
                     self._build_temp_page_fts(conn, path, cjk=False, de=True)
-                    rows = conn.execute(
-                        "SELECT page_num, -bm25(doc_fts)"
-                        " FROM doc_fts"
-                        " WHERE doc_fts MATCH ?"
-                        " ORDER BY bm25(doc_fts) LIMIT ?",
-                        (escaped, max_results),
-                    ).fetchall()
+                    rows = conn.execute(sql, (escaped, max_results)).fetchall()
+                    if not rows and allow_or_fallback:
+                        # Mirror the default path's OR retry (an unmatched
+                        # multi-word query keeps one absent stem from
+                        # zeroing an otherwise precise query). Excluded
+                        # from the multi-document comparison path (which
+                        # passes allow_or_fallback=False), same reason as
+                        # the default path: relaxing every document
+                        # independently there would flood the comparison
+                        # with loose single-term hits.
+                        alt = _fts5_or_fallback_de(query)
+                        if alt is not None:
+                            rows = conn.execute(sql, (alt, max_results)).fetchall()
                 except sqlite3.OperationalError:
                     return []
             out = []
             for page_num, score in rows:
+                # _german_excerpt windows around the EARLIEST page token
+                # whose stem is in the query's stem set (an ANY match, not
+                # ALL), so an OR-recovered page -- one missing some query
+                # stems -- still produces a valid excerpt here.
                 excerpt = self._german_excerpt(
                     path, int(page_num), query, context_chars
                 )
@@ -2882,10 +2926,14 @@ class PDFCache:
                     # querying pdf_search_fts_de directly, so this always
                     # agrees with what search_fts actually matched.
                     self._build_temp_page_fts(conn, path, cjk=False, de=True)
-                    rows = conn.execute(
-                        "SELECT page_num FROM doc_fts WHERE doc_fts MATCH ?",
-                        (escaped,),
-                    ).fetchall()
+                    sql = "SELECT page_num FROM doc_fts WHERE doc_fts MATCH ?"
+                    rows = conn.execute(sql, (escaped,)).fetchall()
+                    if not rows:
+                        # Mirror search_fts's OR retry so the "pages in
+                        # matches also appear here" invariant keeps holding.
+                        alt = _fts5_or_fallback_de(query)
+                        if alt is not None:
+                            rows = conn.execute(sql, (alt,)).fetchall()
                 except sqlite3.OperationalError:
                     return {}
             stemmer = _get_german_stemmer()
@@ -3133,18 +3181,23 @@ class PDFCache:
             ]
         if self.fts_language == "de":
             escaped = _escape_fts5_query_de(query)
+            sql = (
+                "SELECT section_id, title, start_page, end_page,"
+                " title_source, -bm25(doc_sec_fts)"
+                " FROM doc_sec_fts"
+                " WHERE doc_sec_fts MATCH ?"
+                " ORDER BY bm25(doc_sec_fts)"
+                " LIMIT ?"
+            )
             with self._connect() as conn:
                 try:
                     self._build_temp_section_fts(conn, path, cjk=False, de=True)
-                    rows = conn.execute(
-                        "SELECT section_id, title, start_page, end_page,"
-                        " title_source, -bm25(doc_sec_fts)"
-                        " FROM doc_sec_fts"
-                        " WHERE doc_sec_fts MATCH ?"
-                        " ORDER BY bm25(doc_sec_fts)"
-                        " LIMIT ?",
-                        (escaped, max_results),
-                    ).fetchall()
+                    rows = conn.execute(sql, (escaped, max_results)).fetchall()
+                    if not rows:
+                        # Mirror the default section path's OR retry.
+                        alt = _fts5_or_fallback_de(query)
+                        if alt is not None:
+                            rows = conn.execute(sql, (alt, max_results)).fetchall()
                 except sqlite3.OperationalError:
                     return []
                 # Restore original (unstemmed) titles from the porter

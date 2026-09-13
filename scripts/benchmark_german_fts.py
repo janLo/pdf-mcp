@@ -18,7 +18,8 @@ own synthetic page, covering the gaps the option addresses:
   "§ 626 BGB" and must not match every page that merely mentions "BGB"
 - multi-word queries: the AND-semantics of `_escape_fts5_query_de` (every
   stem in the query must be present) against a distractor page carrying
-  only one of the two words
+  only one of the two words, and the OR retry (`_fts5_or_fallback_de`) for
+  a query no page satisfies in full, mirroring the default keyword path
 - distractor pages sharing surface vocabulary but not the query's topic, to
   keep recall/MRR honest rather than trivially 1.0 on a single-page corpus
 
@@ -79,6 +80,14 @@ PAGES: dict[int, str] = {
     9: "Das BGB regelt zahlreiche Alltagsfragen ohne Bezug zu Fristen.",
     10: "Der Arbeitsvertrag ist befristet und endet automatisch.",
     11: "Der Arbeitsvertrag wurde heute unterschrieben.",
+    # OR-fallback regression: no page carries both "622" and "bgb" (13 has
+    # the number without the code name; 9 has the code name without this
+    # number; 8 has the code name with a DIFFERENT number, "626"), so the
+    # AND form of "§ 622 BGB" matches nothing and only the OR retry can
+    # find the true citation, page 13. Page 12 doubles as a "626"/"1626"
+    # discrimination guard alongside the existing page 8.
+    12: "§ 1626 Elterliche Sorge der Eltern für das Kind.",
+    13: "§ 622 Gesetzliche Fristen bei ordentlicher Beendigung.",
 }
 
 QUERIES: list[dict] = [
@@ -105,6 +114,11 @@ QUERIES: list[dict] = [
     # 11 shares "Arbeitsvertrag" but not "befristet", so only page 10,
     # which has both, is relevant
     {"query": "befristeter Arbeitsvertrag", "relevant": [10]},
+    # OR-fallback regression (PR #44 round 2): AND-only matches nothing
+    # (no page has both "622" and "bgb"), so this query is only answered
+    # via the OR retry -- exactly the case the maintainer reported against
+    # a real BGB PDF.
+    {"query": "§ 622 BGB", "relevant": [13]},
 ]
 
 

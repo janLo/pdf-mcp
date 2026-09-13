@@ -81,7 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   search, so a query like `kündigen` now also finds pages using `Kündigung`
   or the common ASCII-transliteration spellings (`Kuendigung`, `Strasse` for
   `Straße`) — none of which the default English/porter index could match.
-  Off by default; see [docs/configuration.md](docs/configuration.md).
+  Turning it on for the first time stems the whole existing cache once,
+  before the server accepts requests. Off by default; see
+  [docs/configuration.md](docs/configuration.md).
 
 - **OCR with nothing to install (Claude Desktop bundle).** On Windows and
   Macs, the first OCR call on a computer with no Tesseract downloads a

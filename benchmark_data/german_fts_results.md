@@ -13,20 +13,27 @@ German via the pure-Python `snowballstemmer` package).
   `pdf_search_fts_de` instead, both sides (index and query) run through
   `_german_normalize` (lowercase, tokenize, Snowball-stem).
 
-Corpus: 12 short synthetic pages written directly into
+Corpus: 14 short synthetic pages written directly into
 `scripts/benchmark_german_fts.py` (no external document), covering
 inflection, both spelling conventions, numbers/statute citations, a
-multi-word query, and topic distractors so recall isn't trivially 1.0.
-Ground truth is hand-authored (small enough to eyeball).
+multi-word query, the OR fallback, and topic distractors so recall isn't
+trivially 1.0.
+Ground truth is hand-authored (small enough to eyeball). "Recall" here is
+binary hit-rate@10 (1.0 if *any* relevant page is in the top 10, else
+0.0), not the fraction of relevant pages retrieved — several queries have
+more than one relevant page (e.g. `kündigen`'s `[0, 1, 2]`), and a 1.00
+recall there means at least one was found, not all three (see the
+Snowball-stemmer-gaps caveat below for why `kündigen` in fact only
+recovers 2 of its 3 relevant pages).
 Reproduce: `python scripts/benchmark_german_fts.py`.
 
-## Aggregate (13 queries)
+## Aggregate (14 queries)
 
 | metric | before (porter) | after (de) | delta |
 | --- | --- | --- | --- |
-| **mean recall@10** | 0.615 | **0.923** | **+0.308** |
-| **MRR** | 0.615 | **0.923** | **+0.308** |
-| queries with a hit | 8 / 13 | **12 / 13** | +4 |
+| **mean recall@10** | 0.643 | **0.929** | **+0.286** |
+| **MRR** | 0.643 | **0.929** | **+0.286** |
+| queries with a hit | 9 / 14 | **13 / 14** | +4 |
 
 ## By query
 
@@ -45,27 +52,34 @@ Reproduce: `python scripts/benchmark_german_fts.py`.
 | § 626 BGB | [8] | 1.00 | 1.00 |
 | 2023 | [8] | 1.00 | 1.00 |
 | befristeter Arbeitsvertrag | [10] | 1.00 | 1.00 |
+| § 622 BGB | [13] | 1.00 | 1.00 |
 
 ## Findings
 
 - **Inflection and spelling variants that porter always missed now hit.**
-  `kündigen` (infinitive query against a page using `Kündigung`/`kündigte`/
-  `Kündigungen`), both ASCII-transliteration spellings (`Kuendigung`,
-  `Strasse`), and the standalone-word case (`Fussball`) all go from 0.00 to
-  1.00 recall.
+  `kündigen` (infinitive query against pages 0 and 2, which use
+  `Kündigung`/`Kündigungen` — sharing its `kundig` stem; NOT page 1's
+  `kündigte`, which stems to `kundigt` and stays a stemmer gap, see below),
+  both ASCII-transliteration spellings (`Kuendigung`, `Strasse`), and the
+  standalone-word case (`Fussball`) all go from 0.00 to 1.00 recall.
 - **Numbers and statute citations survive stemming — and stay discriminative.**
   `626`, `§ 626 BGB`, and `2023` all hit their citation page under "de" mode
   without also matching a distractor page that only mentions "BGB" —
   regression coverage for a digit-dropping tokenizer bug found in review
   (`_GERMAN_TOKEN_RE` used to treat digits as separators, so `"§ 626 BGB"`
   degraded to just `"bgb"` and matched every BGB-mentioning page).
-- **Multi-word queries keep AND-semantics — with no OR-fallback.**
-  `befristeter Arbeitsvertrag` matches only the page containing both stems
-  (verified directly, not just via recall: the returned page list is
-  exactly `[10]`), not the distractor page that shares just one of the two
-  words. Unlike the default keyword path, "de" mode does not retry an
-  unmatched multi-word query with its terms OR-joined, so a query using one
-  word the page doesn't have returns nothing rather than a partial match.
+- **Multi-word queries try AND first, then fall back to OR — same as the
+  default keyword path.** `befristeter Arbeitsvertrag` still matches only
+  the page containing both stems (the returned page list is exactly
+  `[10]`), not the distractor page sharing just one of the two words: AND
+  is tried first and is precise when it hits. `§ 622 BGB` is answered only
+  by the OR retry (`_fts5_or_fallback_de`) — no synthetic page contains
+  both stems ("622" and "bgb"), so the AND form matches nothing, and only
+  the fallback finds the true citation page, ranked above a distractor
+  that merely says "BGB" without this number (verified directly: the
+  citation page comes back first). Regression coverage for the maintainer
+  reporting exactly this query against a real BGB PDF returning nothing
+  under "de" mode.
 - **Exact-form queries are unaffected either way.** `Kündigung`,
   `Straße`, `Urlaubsanspruch`, `Arbeitsgericht`, and the numeric queries
   already worked under porter (the query happens to literally match a page
@@ -75,10 +89,16 @@ Reproduce: `python scripts/benchmark_german_fts.py`.
 ## Honest caveats
 
 - **The German Snowball stemmer itself has gaps.** `gekündigt` (past
-  participle, `ge-` prefix) stems to `gekundigt`, not the `kundig` stem
-  shared by `kündigen`/`Kündigung`/`Kündigungen`/`kündigte` — verified
-  directly against the `snowballstemmer` package, not an integration bug.
-  This is a limitation of the stemming algorithm itself, not of how it's
+  participle, `ge-` prefix) stems to `gekundigt`, and `kündigte` (3rd
+  person past) stems to `kundigt` — neither shares the `kundig` stem that
+  `kündigen`/`Kündigung`/`Kündigungen` do — verified directly against the
+  `snowballstemmer` package, not an integration bug. `get_fts_page_counts`
+  demonstrates this precisely: `_cache.get_fts_page_counts(path,
+  "kündigen")` on a page containing all four forms counts only 2 (the
+  `kundig`-stem occurrences), not 4 — see
+  `test_get_fts_page_counts_counts_stem_matches` in
+  `tests/test_cache_german_fts.py`. This is a limitation of the stemming
+  algorithm itself, not of how it's
   wired into `cache.py`; a query using the exact inflected form the page
   uses always works regardless.
 - **No compound-word splitting.** `Kündigungsschutzklage` and
@@ -121,4 +141,15 @@ searched — see cache.py's `_sync_de_tables` and `_build_temp_page_fts`),
 cutting median query time to ~39 ms — about 25x faster, and the same order
 of magnitude as the porter default (the remaining gap is per-result excerpt
 construction, which re-tokenizes only the matched page, not the whole
-document).
+document). The OR fallback added in review round 2 (see "By query" above)
+does not change these numbers: it only runs when the AND form already
+matched nothing, and retries against the same connection-local temp index
+built for the AND attempt — no extra stemming, one extra `MATCH` against
+an index already in memory.
+
+**Not measured here: one-time startup cost.** The maintainer reported the
+open-time sync (`_sync_de_tables`, not the per-query path this section
+measures) taking about 28 s on a 4,000-page cache the first time `[fts]
+language = "de"` is turned on, blocking server startup for that one run;
+later starts only re-sync documents whose page count changed since. See
+[docs/configuration.md](../docs/configuration.md).

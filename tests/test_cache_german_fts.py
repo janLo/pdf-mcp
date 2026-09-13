@@ -8,7 +8,7 @@ transform (Snowball stemming instead of char-splitting).
 
 import pytest
 
-from pdf_mcp.cache import PDFCache, _german_normalize
+from pdf_mcp.cache import PDFCache, _fts5_or_fallback_de, _german_normalize
 from pdf_mcp.section_detector import Section
 
 
@@ -40,6 +40,32 @@ def test_german_normalize_keeps_digits_as_their_own_token():
     assert _german_normalize("§ 626 BGB") == "626 bgb"
     assert _german_normalize("626") == "626"
     assert _german_normalize("2023") == "2023"
+
+
+def test_or_fallback_de_joins_stems_with_or():
+    # "§ 622 BGB" is 3 raw tokens (qualifies via _fts5_or_fallback's rule)
+    # but only 2 German stems ("§" is dropped as a separator) -- built from
+    # stems, not raw tokens, so it stays consistent with the index-time
+    # transform.
+    assert _fts5_or_fallback_de("§ 622 BGB") == '"622" OR "bgb"'
+
+
+def test_or_fallback_de_is_none_for_a_two_stem_query():
+    # "befristeter Arbeitsvertrag" is 2 raw tokens, so it fails
+    # _fts5_or_fallback's own qualification rule regardless of stem count.
+    assert _fts5_or_fallback_de("befristeter Arbeitsvertrag") is None
+
+
+def test_or_fallback_de_is_none_when_raw_tokens_qualify_but_stems_dont():
+    # 3 raw tokens qualify under _fts5_or_fallback ("§" counts as its own
+    # token there), but German normalization drops "§" as a separator,
+    # leaving a single stem -- the OR form would be identical to the AND
+    # form, so there's nothing to retry.
+    assert _fts5_or_fallback_de("§ 626 §") is None
+
+
+def test_or_fallback_de_is_none_when_no_tokens_survive():
+    assert _fts5_or_fallback_de("   ***   ") is None
 
 
 @pytest.fixture
@@ -263,3 +289,63 @@ class TestGermanMirrorCompleteness:
         results = de_cache.search_fts(path, "kündigen", 10, 100)
         assert sorted(r["page"] for r in results) == [1, 2]
         assert de_cache.get_fts_page_counts(path, "kündigen") == {0: 1, 1: 1}
+
+
+class TestGermanOrFallback:
+    """PR #44 round 2: 'de' mode must retry an unmatched multi-word query
+    with its stems OR-joined, same as the default keyword path -- an agent
+    querying "§ 626 BGB" against a page that cites "§ 626" without ever
+    saying "BGB" must still get that page back instead of an empty
+    result. Relative BM25 ranking of OR-recovered pages against each other
+    is exercised end-to-end by scripts/benchmark_german_fts.py's
+    "§ 622 BGB" case, not asserted here."""
+
+    def test_and_only_query_falls_back_to_or(self, de_cache, tmp_path):
+        cite_path = _touch_pdf(tmp_path, "cite.pdf")
+        de_cache.save_pages_text(
+            cite_path,
+            {
+                # Cites the number without ever saying "BGB".
+                0: "Die fristlose Kündigung nach § 626.",
+                # Says "BGB" without this number -- an OR match, but not
+                # the citation the query is actually after.
+                1: "Das BGB regelt Alltagsfragen.",
+            },
+        )
+        results = de_cache.search_fts(cite_path, "§ 626 BGB", 10, 100)
+        assert sorted(r["page"] for r in results) == [1, 2]
+
+        counts = de_cache.get_fts_page_counts(cite_path, "§ 626 BGB")
+        assert counts == {0: 1, 1: 1}
+
+    def test_multi_document_comparison_path_still_gets_no_fallback(
+        self, de_cache, tmp_path
+    ):
+        # allow_or_fallback=False is how server.py's multi-document
+        # comparison calls search_fts -- relaxing every document
+        # independently there would flood the comparison with loose
+        # single-term hits (same reasoning as the default keyword path).
+        path = _touch_pdf(tmp_path, "cite2.pdf")
+        de_cache.save_page_text(path, 0, "Die fristlose Kündigung nach § 626.")
+        assert (
+            de_cache.search_fts(path, "§ 626 BGB", 10, 100, allow_or_fallback=False)
+            == []
+        )
+
+    def test_section_search_also_falls_back_to_or(self, de_cache, tmp_path):
+        path = _touch_pdf(tmp_path, "cite_sec.pdf")
+        de_cache.index_sections(
+            path,
+            [
+                Section(
+                    title="Fristlose Kündigung",
+                    start_page=1,
+                    end_page=2,
+                    text="Die fristlose Kündigung nach § 626.",
+                    title_source="heuristic",
+                )
+            ],
+        )
+        results = de_cache.search_section_fts(path, "§ 626 BGB", 10)
+        assert len(results) == 1
+        assert results[0]["title"] == "Fristlose Kündigung"
