@@ -201,3 +201,71 @@ def verify_remote_backend(
         min_cosine=min_cos,
         per_sentence_cosine=tuple(float(c) for c in cosines),
     )
+
+
+@dataclass(frozen=True)
+class RemoteBackendSetup:
+    """What `configure_remote_backend()` did, for the caller to log/print.
+
+    ``spec`` is the ORIGINALLY configured spec (before any fallback) -- None
+    when ``[embedding].backend`` isn't "openai", in which case
+    ``check_result`` is also None (nothing to check). ``active`` is whether
+    the remote backend is actually registered with `embedder` after this
+    call -- False whenever `spec` is None, and also False when a configured
+    spec failed the safety check and this fell back to local fastembed.
+    """
+
+    spec: "RemoteSpec | None"
+    check_result: "SafetyCheckResult | None"
+    active: bool
+
+
+def configure_remote_backend(pdf_config: Any) -> RemoteBackendSetup:
+    """Resolve, verify, and register `pdf_config`'s `[embedding]` backend.
+
+    This is the one sequence every process entry point must run before any
+    `embedder.encode`/`encode_query`/`check_available` call: resolve
+    `pdf_config.remote_embedding_spec`, run the mandatory startup safety
+    check when it's configured, fall back via
+    `pdf_config.disable_remote_embedding_backend()` on a cosine mismatch,
+    and register the surviving spec (or None) with
+    `embedder.configure_remote`. Extracted from server.py's own startup
+    sequence after `pdf-mcp-warm` (`warm_cli.py`) was found to skip this
+    entirely -- it built its own `PDFConfig` and called `embedder.encode`
+    directly, so a configured remote backend was silently never used (PR
+    #47 review follow-up). `server.py` and `warm_cli.py` both call this now
+    so a third entry point can't repeat that gap.
+
+    `pdf_config` is typed `Any` rather than `PDFConfig` to avoid a
+    `config.py` <-> `remote_embedding_check.py` import cycle -- `config.py`
+    already imports `RemoteSpec` from `remote_embedder.py`, so the
+    dependency only ever points that direction. `embedder` is imported
+    locally, matching this module's and server.py's existing lazy-import
+    convention (a process that never touches semantic search shouldn't pay
+    fastembed's import cost).
+
+    Does NOT log or print anything itself -- the returned
+    `RemoteBackendSetup` carries everything needed for that, so each caller
+    reports it in its own idiom (server.py's `logging`, the CLI's
+    `print(..., file=sys.stderr)`).
+    """
+    from . import embedder
+
+    spec = pdf_config.remote_embedding_spec
+    if spec is None:
+        embedder.configure_remote(None)
+        return RemoteBackendSetup(spec=None, check_result=None, active=False)
+
+    check_result = verify_remote_backend(spec)
+    if not check_result.ok:
+        # See disable_remote_embedding_backend's docstring: this makes the
+        # fallback consistent at the PDFConfig level too, not just here --
+        # every other call site that resolves an embedding identity from
+        # `pdf_config` (server_info, cache identity, ...) sees the same
+        # fastembed-only state.
+        pdf_config.disable_remote_embedding_backend()
+        embedder.configure_remote(None)
+        return RemoteBackendSetup(spec=spec, check_result=check_result, active=False)
+
+    embedder.configure_remote(spec)
+    return RemoteBackendSetup(spec=spec, check_result=check_result, active=True)

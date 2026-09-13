@@ -220,62 +220,47 @@ cache = PDFCache(
 pdf_config = PDFConfig()
 url_fetcher = URLFetcher(cache_dir=cache.cache_dir / "downloads", config=pdf_config)
 
-# Register the remote embedding spec (if [embedding].backend = "openai") once,
-# here, rather than at every encode()/encode_query() call site -- see
-# embedder.configure_remote's docstring. None (the fastembed backend, the
-# default) is a valid, cheap call. Import is local, matching every other
-# `embedder` use in this module, so fastembed's own import cost isn't paid
-# by processes that never touch semantic search. A misconfigured
-# [embedding].backend = "openai" (bad base_url, unset api_key_env, ...)
-# fails fast here, at process start, with the same ValueError contract
-# PDFConfig already has, rather than surfacing later as a confusing
-# encode-time error.
-from . import embedder as _embedder_startup  # noqa: E402
+# Resolve, verify (mandatory startup safety check, issue #42), and
+# register the remote embedding spec (if [embedding].backend = "openai")
+# once, here, rather than at every encode()/encode_query() call site -- see
+# remote_embedding_check.configure_remote_backend's docstring for the full
+# sequence and why it's shared with pdf-mcp-warm (warm_cli.py), the other
+# process entry point that must run it. None (the fastembed backend, the
+# default) is a valid, cheap call. A misconfigured [embedding].backend =
+# "openai" (bad base_url, unset api_key_env, ...) fails fast here, at
+# process start, with the same ValueError contract PDFConfig already has,
+# rather than surfacing later as a confusing encode-time error. A cosine
+# mismatch against the configured endpoint (wrong model, wrong
+# quantization, wrong pooling, or the endpoint being unreachable) instead
+# falls back to the local fastembed backend with a warning -- the server
+# must still start and serve correct (if slower) vectors, never crash and
+# never silently serve vectors from the wrong space.
+from . import remote_embedding_check as _remote_check_startup  # noqa: E402
+from .remote_embedder import _redact_base_url as _redact_base_url_startup  # noqa: E402
 
-_remote_spec_startup = pdf_config.remote_embedding_spec
-if _remote_spec_startup is not None:
-    # Startup safety check (issue #42): pdf-mcp cannot see which model an
-    # OpenAI-compatible endpoint actually serves, so verify it against
-    # stored local-fastembed reference vectors before trusting it for real
-    # search traffic. Mandatory, not config-gated: a verified endpoint
-    # shares the SAME vector-cache rows as local fastembed (see
-    # PDFConfig.embedding_model's docstring), so an unverified one could
-    # silently poison those rows rather than just its own namespace. A
-    # cosine mismatch (wrong model, wrong quantization, wrong pooling, or
-    # the endpoint being unreachable) falls back to the local fastembed
-    # backend with a warning -- the server must still start and serve
-    # correct (if slower) vectors, never crash and never silently serve
-    # vectors from the wrong space.
-    from . import remote_embedding_check as _remote_check_startup
-    from .remote_embedder import _redact_base_url as _redact_base_url_startup
-
-    _check_result = _remote_check_startup.verify_remote_backend(_remote_spec_startup)
-    if not _check_result.ok:
-        logger.warning(
-            "Remote embedding backend failed the startup safety check "
-            "against %s: %s. Falling back to local fastembed (%s).",
-            _redact_base_url_startup(_remote_spec_startup.base_url),
-            _check_result.reason,
-            _embedder_startup.DEFAULT_MODEL,
-        )
-        # Disables at the PDFConfig level (not just this local variable) so
-        # every other call site that resolves an embedding identity from
-        # pdf_config (search-capability probing, cache identity, ...) sees
-        # the same fallback -- see disable_remote_embedding_backend's
-        # docstring for why that consistency matters.
-        pdf_config.disable_remote_embedding_backend()
-        _remote_spec_startup = None
-    else:
+_remote_setup_startup = _remote_check_startup.configure_remote_backend(pdf_config)
+if _remote_setup_startup.spec is not None:
+    assert _remote_setup_startup.check_result is not None  # spec implies a check ran
+    if _remote_setup_startup.active:
         logger.info(
             "Remote embedding backend passed the startup safety check "
             "against %s: %s",
-            _redact_base_url_startup(_remote_spec_startup.base_url),
-            _check_result.reason,
+            _redact_base_url_startup(_remote_setup_startup.spec.base_url),
+            _remote_setup_startup.check_result.reason,
         )
-    del _remote_check_startup, _check_result, _redact_base_url_startup
+    else:
+        from . import embedder as _embedder_startup
 
-_embedder_startup.configure_remote(_remote_spec_startup)
-del _embedder_startup, _remote_spec_startup
+        logger.warning(
+            "Remote embedding backend failed the startup safety check "
+            "against %s: %s. Falling back to local fastembed (%s).",
+            _redact_base_url_startup(_remote_setup_startup.spec.base_url),
+            _remote_setup_startup.check_result.reason,
+            _embedder_startup.DEFAULT_MODEL,
+        )
+        del _embedder_startup
+
+del _remote_check_startup, _redact_base_url_startup, _remote_setup_startup
 
 # Update check: bundle installs only (the bundle sets PDF_MCP_UPDATE_CHECK),
 # and `[updates] check` in the config always wins. Claude Desktop does not

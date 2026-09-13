@@ -16,6 +16,7 @@ import pytest
 
 from pdf_mcp.remote_embedding_check import (
     REFERENCE_PATH,
+    configure_remote_backend,
     load_reference,
     verify_remote_backend,
 )
@@ -26,6 +27,20 @@ def _spec(**overrides) -> RemoteSpec:
     defaults = dict(base_url="http://localhost:8712/v1", model="bge-small-en-v1.5")
     defaults.update(overrides)
     return RemoteSpec(**defaults)
+
+
+class _FakeConfig:
+    """Duck-typed stand-in for PDFConfig -- configure_remote_backend only
+    ever touches `remote_embedding_spec` and
+    `disable_remote_embedding_backend()`, so a real PDFConfig (with its own
+    config.toml parsing) is unnecessary here."""
+
+    def __init__(self, spec: "RemoteSpec | None"):
+        self.remote_embedding_spec = spec
+        self.disable_calls = 0
+
+    def disable_remote_embedding_backend(self) -> None:
+        self.disable_calls += 1
 
 
 class TestLoadReference:
@@ -193,3 +208,71 @@ class TestVerifyRemoteBackendFallback:
         strict = verify_remote_backend(_spec(), threshold=0.9999, encode_fn=fake_encode)
         assert loose.ok
         assert not strict.ok
+
+
+class TestConfigureRemoteBackend:
+    """PR #47 review follow-up: pdf-mcp-warm (warm_cli.py) built its own
+    PDFConfig but never ran this resolve+verify+register sequence, so a
+    configured remote backend was silently never used there. This is the
+    extracted sequence server.py and warm_cli.py both now call."""
+
+    def test_no_spec_configures_none_and_reports_inactive(self, monkeypatch):
+        import pdf_mcp.embedder as emb
+
+        calls = []
+        monkeypatch.setattr(emb, "configure_remote", calls.append)
+
+        result = configure_remote_backend(_FakeConfig(spec=None))
+
+        assert result.spec is None
+        assert result.check_result is None
+        assert result.active is False
+        assert calls == [None]
+
+    def test_passing_check_configures_spec_and_reports_active(self, monkeypatch):
+        import pdf_mcp.embedder as emb
+
+        sentences, vectors = load_reference()
+        monkeypatch.setattr(
+            "pdf_mcp.remote_embedding_check.verify_remote_backend",
+            lambda spec: verify_remote_backend(
+                spec, encode_fn=lambda texts, s: vectors.copy()
+            ),
+        )
+        calls = []
+        monkeypatch.setattr(emb, "configure_remote", calls.append)
+
+        spec = _spec()
+        cfg = _FakeConfig(spec=spec)
+        result = configure_remote_backend(cfg)
+
+        assert result.spec is spec
+        assert result.check_result is not None
+        assert result.check_result.ok
+        assert result.active is True
+        assert calls == [spec]
+        assert cfg.disable_calls == 0
+
+    def test_failing_check_disables_backend_and_configures_none(self, monkeypatch):
+        import pdf_mcp.embedder as emb
+
+        def boom(texts, spec):
+            raise ConnectionError("refused")
+
+        monkeypatch.setattr(
+            "pdf_mcp.remote_embedding_check.verify_remote_backend",
+            lambda spec: verify_remote_backend(spec, encode_fn=boom),
+        )
+        calls = []
+        monkeypatch.setattr(emb, "configure_remote", calls.append)
+
+        spec = _spec()
+        cfg = _FakeConfig(spec=spec)
+        result = configure_remote_backend(cfg)
+
+        assert result.spec is spec
+        assert result.check_result is not None
+        assert not result.check_result.ok
+        assert result.active is False
+        assert calls == [None]
+        assert cfg.disable_calls == 1

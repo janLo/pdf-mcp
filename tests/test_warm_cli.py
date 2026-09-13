@@ -210,3 +210,145 @@ class TestMainEndToEnd:
 
         cache = PDFCache(cache_dir=cache_dir, ttl_hours=1)
         assert cache.get_section_fts_coverage(sample_pdf_with_toc_sections) == 0
+
+
+class TestMainRemoteBackend:
+    """PR #47 review follow-up: pdf-mcp-warm built its own PDFConfig but
+    never called embedder.configure_remote() or the startup safety check,
+    so a configured `[embedding].backend = "openai"` was silently never
+    used -- every prewarm ran on local fastembed with no error or
+    warning. warm_cli.main() now runs the same
+    remote_embedding_check.configure_remote_backend() sequence server.py
+    does at startup."""
+
+    def _openai_config(self, tmp_path) -> "Path":
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "http://localhost:8712/v1"\n'
+            'model = "bge-small-en-v1.5"\n',
+            encoding="utf-8",
+        )
+        return cfg
+
+    def _stub_embedder(self, monkeypatch):
+        """Hermetic stand-ins for check_available/encode -- no real
+        fastembed or network I/O, matching this file's --no-embeddings-
+        by-default hermetic style for every test but the one real
+        fastembed round trip."""
+        import numpy as np
+
+        from pdf_mcp import embedder
+
+        monkeypatch.setattr(embedder, "check_available", lambda model: None)
+        monkeypatch.setattr(
+            embedder,
+            "encode",
+            lambda texts, model: np.zeros((len(texts), 4), dtype=np.float32),
+        )
+
+    def test_configures_and_reports_a_passing_remote_backend(
+        self, corpus_dir, tmp_path, monkeypatch, capsys
+    ):
+        from pdf_mcp.config import PDFConfig
+        from pdf_mcp.remote_embedding_check import SafetyCheckResult
+
+        cfg_path = self._openai_config(tmp_path)
+        monkeypatch.setattr(warm_cli, "PDFConfig", lambda: PDFConfig(cfg_path))
+        monkeypatch.setenv("PDF_MCP_CACHE_DIR", str(tmp_path / "cache"))
+        self._stub_embedder(monkeypatch)
+
+        configure_calls = []
+        monkeypatch.setattr("pdf_mcp.embedder.configure_remote", configure_calls.append)
+        monkeypatch.setattr(
+            "pdf_mcp.remote_embedding_check.verify_remote_backend",
+            lambda spec: SafetyCheckResult(ok=True, reason="fake parity ok"),
+        )
+
+        rc = warm_cli.main([str(corpus_dir), "--no-sections"])
+        assert rc == 0
+
+        assert len(configure_calls) == 1
+        assert configure_calls[0] is not None
+        assert configure_calls[0].base_url == "http://localhost:8712/v1"
+
+        out = capsys.readouterr().err
+        assert "remote embedding backend passed the startup safety check" in out
+        assert "fake parity ok" in out
+
+    def test_reports_and_falls_back_on_a_failing_remote_backend(
+        self, corpus_dir, tmp_path, monkeypatch, capsys
+    ):
+        from pdf_mcp.config import PDFConfig
+        from pdf_mcp.remote_embedding_check import SafetyCheckResult
+
+        cfg_path = self._openai_config(tmp_path)
+        monkeypatch.setattr(warm_cli, "PDFConfig", lambda: PDFConfig(cfg_path))
+        monkeypatch.setenv("PDF_MCP_CACHE_DIR", str(tmp_path / "cache"))
+        self._stub_embedder(monkeypatch)
+
+        configure_calls = []
+        monkeypatch.setattr("pdf_mcp.embedder.configure_remote", configure_calls.append)
+        monkeypatch.setattr(
+            "pdf_mcp.remote_embedding_check.verify_remote_backend",
+            lambda spec: SafetyCheckResult(ok=False, reason="fake cosine mismatch"),
+        )
+
+        rc = warm_cli.main([str(corpus_dir), "--no-sections"])
+        assert rc == 0
+
+        assert configure_calls == [None]  # fell back to local fastembed
+
+        out = capsys.readouterr().err
+        assert "warning: remote embedding backend failed" in out
+        assert "fake cosine mismatch" in out
+
+    def test_explicit_model_flag_bypasses_remote_backend(
+        self, corpus_dir, tmp_path, monkeypatch, capsys
+    ):
+        """--model means "use this fastembed model locally" -- a
+        configured remote backend must not be silently substituted in."""
+        from pdf_mcp.config import PDFConfig
+
+        cfg_path = self._openai_config(tmp_path)
+        monkeypatch.setattr(warm_cli, "PDFConfig", lambda: PDFConfig(cfg_path))
+        monkeypatch.setenv("PDF_MCP_CACHE_DIR", str(tmp_path / "cache"))
+        self._stub_embedder(monkeypatch)
+
+        configure_calls = []
+        monkeypatch.setattr("pdf_mcp.embedder.configure_remote", configure_calls.append)
+
+        rc = warm_cli.main(
+            [str(corpus_dir), "--no-sections", "--model", "BAAI/bge-small-en-v1.5"]
+        )
+        assert rc == 0
+
+        assert configure_calls == []  # configure_remote_backend never called
+        out = capsys.readouterr().err
+        assert "remote embedding backend" not in out
+
+    def test_misconfigured_openai_backend_errors_cleanly(
+        self, corpus_dir, tmp_path, monkeypatch, capsys
+    ):
+        """remote_embedding_spec validates the whole [embedding] section
+        and raises ValueError on a bad config -- the CLI must report it
+        with its own "error: ..." + exit 1 convention (every other config
+        error here does), not a raw traceback."""
+        from pdf_mcp.config import PDFConfig
+
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(
+            '[embedding]\nbackend = "openai"\n'
+            'base_url = "not-a-url"\n'
+            'model = "bge-small-en-v1.5"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(warm_cli, "PDFConfig", lambda: PDFConfig(cfg_path))
+        monkeypatch.setenv("PDF_MCP_CACHE_DIR", str(tmp_path / "cache"))
+
+        rc = warm_cli.main([str(corpus_dir), "--no-sections"])
+        assert rc == 1
+
+        out = capsys.readouterr().err
+        assert "error:" in out
+        assert "base_url" in out
