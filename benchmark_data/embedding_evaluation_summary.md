@@ -5,13 +5,28 @@ default `BAAI/bge-small-en-v1.5` on fastembed/CPU, via different prefixes, an ML
 (Apple-GPU) backend, or a different model? Every path was benchmark-tested before
 any production change.
 
-**Conclusion: no. `bge-small` on fastembed CPU stays the default.** The only
-change worth making was an unrelated bug the investigation surfaced — the
-embedding **normalization fix** (shipped to `develop`).
+**Conclusion: no, for English. `bge-small` on fastembed CPU stays the
+default.** The only change worth making was an unrelated bug the
+investigation surfaced — the embedding **normalization fix** (shipped to
+`develop`).
+
+**This conclusion is English-only.** A separate German-language benchmark
+([`german_embedding_results.md`](german_embedding_results.md), against a
+public statute PDF per
+[jztan/pdf-mcp#46](https://github.com/jztan/pdf-mcp/issues/46)) found
+bge-small's German semantic MRR (0.172) meaningfully below a keyword-search
+control on the same corpus (0.812) — a real gap, not a benchmark artifact —
+and that no locally-runnable model tested closes it cleanly: the closest,
+`multilingual-e5-large`, gains +0.102 MRR but misses this repo's own 1.5x
+latency gate, and the specific model the issue asked about
+(`jina-embeddings-v2-base-de`) fails to load on this repo's pinned
+`onnxruntime` at all. The catalog is exhausted for *English*; it is not yet
+exhausted for German.
 
 Detail docs (kept): [`e5_prefix_results.md`](e5_prefix_results.md) ·
 [`mlx_backend_results.md`](mlx_backend_results.md) ·
-[`large_models_results.md`](large_models_results.md).
+[`large_models_results.md`](large_models_results.md) ·
+[`german_embedding_results.md`](german_embedding_results.md).
 Raw per-run output: `benchmark_results/*.json` (+ `.txt`), gitignored.
 
 ## Everything tested
@@ -47,5 +62,7 @@ LLM-fed page retrieval** — short factual queries over PDF pages, results hande
 an agent. Confirmed three independent times (May 4-model run, e5-large, this
 large-model screen) and corroborated by the literature (arXiv 2506.00049,
 "small embeddings + LLM re-ranking beat bigger models"). Model size buys almost
-nothing in pdf-mcp's regime. The only remaining lever for more confidence is a
-broader, multi-domain corpus — the model catalog is exhausted.
+nothing in pdf-mcp's regime, for English. The only remaining lever for more
+confidence on the *English* path is a broader, multi-domain corpus — that
+catalog is exhausted. Non-English is a different question with a different
+answer; see [`german_embedding_results.md`](german_embedding_results.md).
