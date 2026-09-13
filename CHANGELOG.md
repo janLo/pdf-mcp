@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`pdf-mcp-warm`: an offline entry point that warms a whole corpus to
+  completion, outside any MCP client.** `pdf_corpus_warm` (the tool) caps
+  at 100 files and 300 seconds per call by design, so a folder that does
+  not fit either limit needs the same call re-issued by hand, and a query
+  against a still-partly-warm corpus times out in the meantime. Installed
+  alongside `pdf-mcp` (same package, a second console script), it walks a
+  folder (`--recursive`), warms embeddings *and* the section-granularity
+  search index by default (`--no-embeddings` / `--no-sections` opt out),
+  and writes to the exact cache the server reads — already-cached
+  documents are free, so re-running after an interrupt resumes rather
+  than redoing work. See
+  [docs/configuration.md](docs/configuration.md#offline-prewarm-pdf-mcp-warm).
+
+- **`pdf_corpus_warm(paths, sections=True)`: warm the section-granularity
+  search index ahead of query time.** Previously, a corpus warmed with
+  `pdf_corpus_warm` (any combination of text/embeddings) still left
+  `pdf_search(granularity="section")` to build that document's section
+  index from scratch, in full, serially, on the first section-mode
+  query — for a heuristic-fallback document with no TOC, measured at
+  ~32ms/page, enough on its own to time out a timeout-bounded MCP client
+  on a large document even though the rest of the corpus was fully warm.
+  `sections=True` (default `False`, to stay budget-conscious like
+  `embeddings`) builds it during warm instead, in the same parallel
+  worker pool that already extracts text — including backfilling it for
+  documents that were already fully cached before this flag was first
+  requested. That backfill is itself budgeted: a doc the deadline cuts
+  off joins `unprocessed` (`warm_complete: false`) instead of running
+  past `budget_seconds`, and finishes on a later call. See
+  [docs/tool-reference.md](docs/tool-reference.md#pdf_corpus_warm) and
+  [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md).
+
+- **OCR and page rendering now use up to 16 parallel workers on many-core
+  hosts, up from a flat cap of 8.** Re-measured on a 24-thread host: OCR
+  and render dispatch were both still gaining at 16 workers (8.09x /
+  6.04x), not yet plateaued, so the old flat cap left real throughput
+  idle on many-core machines. Below 16 cores this is unchanged from
+  before (worker count was already governed by the core count, not the
+  cap); the new ceiling of 16 stands pending a benchmark past that.
+  `PDF_MCP_MAX_WORKERS` still only clamps the worker count down, same as
+  before. Note for CPU-limited containers: worker count is sized from
+  the host's total logical CPUs, not a cgroup quota, so this can double
+  oversubscription under `docker run --cpus=N`; set
+  `PDF_MCP_MAX_WORKERS` explicitly there. See
+  [benchmark_data/warm_parallelism_strix.md](benchmark_data/warm_parallelism_strix.md).
+
 - **One-click install for Claude Desktop.** Every release now ships a
   `pdf-mcp-<version>.mcpb` bundle. Download it and drag it onto Claude
   Desktop's Settings > Extensions page; nothing needs to be installed
