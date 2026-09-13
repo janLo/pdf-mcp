@@ -190,6 +190,76 @@ class TestRunModel:
         )
         assert bem.server_module.pdf_config.embedding_model == original_model
 
+    def test_tolerates_pdf_with_no_scenarios_yet(self, monkeypatch):
+        # Regression: benchmark_data/ground_truth.json carries PDFs with an
+        # empty "scenarios" dict (entries reserved for a corpus not yet
+        # wired into this harness, e.g. "bert"/"resnet"). run_model must
+        # not crash on next(iter(...)) of an empty scenarios dict, and the
+        # latency probe must not pick a PDF that has no warmed query.
+        gt = {
+            "pdfs": {
+                "empty": {
+                    "url": "https://example.com/empty.pdf",
+                    "title": "Empty",
+                    "page_count": 1,
+                    "scenarios": {},
+                },
+                "real": {
+                    "url": "https://example.com/real.pdf",
+                    "title": "Real",
+                    "page_count": 5,
+                    "scenarios": {"1a": {"query": "q1", "relevant_pages": [1]}},
+                },
+            }
+        }
+        resolved = {
+            "https://example.com/empty.pdf": "/tmp/empty.pdf",
+            "https://example.com/real.pdf": "/tmp/real.pdf",
+        }
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: (resolved[u], None))
+        monkeypatch.setattr(
+            bem, "pdf_search", lambda *a, **kw: {"matches": [{"page": 1}]}
+        )
+        result = bem.run_model(
+            model_name="BAAI/bge-small-en-v1.5", gt=gt, scenario_k={"1a": 5}
+        )
+        assert len(result["scenarios"]) == 1
+        assert "empty" not in result["embed_ms"]
+        assert "real" in result["embed_ms"]
+        assert result["p50_query_ms"] >= 0.0
+
+    def test_empty_scenarios_pdf_ordered_first_still_works(self, monkeypatch):
+        # Same as above but the scenario-less PDF is the *first* dict entry,
+        # exercising the latency probe's pdf-selection fix directly.
+        gt = {
+            "pdfs": {
+                "empty": {
+                    "url": "https://example.com/empty.pdf",
+                    "title": "Empty",
+                    "page_count": 1,
+                    "scenarios": {},
+                },
+                "real": {
+                    "url": "https://example.com/real.pdf",
+                    "title": "Real",
+                    "page_count": 5,
+                    "scenarios": {"1a": {"query": "q1", "relevant_pages": [1]}},
+                },
+            }
+        }
+        resolved = {
+            "https://example.com/empty.pdf": "/tmp/empty.pdf",
+            "https://example.com/real.pdf": "/tmp/real.pdf",
+        }
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: (resolved[u], None))
+        monkeypatch.setattr(
+            bem, "pdf_search", lambda *a, **kw: {"matches": [{"page": 1}]}
+        )
+        result = bem.run_model(
+            model_name="BAAI/bge-small-en-v1.5", gt=gt, scenario_k={"1a": 5}
+        )
+        assert result["p50_query_ms"] >= 0.0
+
 
 class TestComputeVerdict:
     def _model_result(self, name, mrr, p50, is_baseline=False):
