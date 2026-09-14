@@ -30,9 +30,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+import pdf_mcp.embedder as embedder_module  # noqa: E402
 import pdf_mcp.server as server_module  # noqa: E402
 from bench_env import environment  # noqa: E402
 from pdf_mcp.cache import PDFCache  # noqa: E402
+from pdf_mcp.config import _DEFAULT_BGE_SMALL_CONFIDENCE_THRESHOLD  # noqa: E402
 from pdf_mcp.server import _resolve_path  # noqa: E402
 from pdf_mcp.server import pdf_search  # noqa: E402
 
@@ -216,13 +218,23 @@ class _ConfigStub:
     benchmark used to score such a model 0.0 and report it as a real,
     successful measurement. `run_model` now checks the warm-up search's
     result (see below) so that failure mode is loud, and
-    `confidence_threshold` mirrors server.py's own default so the
-    semantic/hybrid confidence annotation behaves as it does in production.
+    `confidence_threshold` mirrors PDFConfig.confidence_threshold's own
+    unset-in-config.toml resolution (config.py's cases 2/3, no per-run
+    override support here): `_DEFAULT_BGE_SMALL_CONFIDENCE_THRESHOLD` for
+    any fastembed identity or a bge-small-compatible remote one, None
+    otherwise -- so a non-bge-small remote model benchmarked here reports
+    `low_confidence`/`confidence_unavailable` the same way it would in
+    production, rather than borrowing bge-small's tuning.
     """
 
     def __init__(self, model_name: str) -> None:
         self.embedding_model = model_name
-        self.confidence_threshold = server_module._SEMANTIC_CONFIDENCE_THRESHOLD
+        if embedder_module._is_remote_identity(
+            model_name
+        ) and not embedder_module.is_bge_small_compatible(model_name):
+            self.confidence_threshold = None
+        else:
+            self.confidence_threshold = _DEFAULT_BGE_SMALL_CONFIDENCE_THRESHOLD
 
     def check_path(self, path: str) -> None:  # noqa: D401
         pass

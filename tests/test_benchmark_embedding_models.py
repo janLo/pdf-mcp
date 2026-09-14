@@ -223,10 +223,21 @@ class TestRunModel:
         # _ConfigStub must expose every pdf_config attribute server.py reads
         # on the pdf_search path; a missing one surfaces as a search error.
         stub = bem._ConfigStub("BAAI/bge-small-en-v1.5")
-        assert (
-            stub.confidence_threshold
-            == bem.server_module._SEMANTIC_CONFIDENCE_THRESHOLD
-        )
+        assert stub.confidence_threshold == bem._DEFAULT_BGE_SMALL_CONFIDENCE_THRESHOLD
+
+    def test_config_stub_confidence_threshold_none_for_non_bge_small_remote(self):
+        # A non-bge-small remote identity must not silently borrow
+        # bge-small's tuning -- mirrors PDFConfig.confidence_threshold's
+        # own case 3 (config.py).
+        stub = bem._ConfigStub("openai:127.0.0.1:8020/bge-m3")
+        assert stub.confidence_threshold is None
+
+    def test_config_stub_confidence_threshold_set_for_bge_small_remote(self):
+        # A bge-small-compatible remote identity keeps the same tuning as
+        # local fastembed -- mirrors PDFConfig.confidence_threshold's case
+        # 2/3 boundary (config.py).
+        stub = bem._ConfigStub("openai:127.0.0.1:8020/bge-small-en-v1.5")
+        assert stub.confidence_threshold == bem._DEFAULT_BGE_SMALL_CONFIDENCE_THRESHOLD
 
     def test_tolerates_pdf_with_no_scenarios_yet(self, monkeypatch):
         # Regression: benchmark_data/ground_truth.json carries PDFs with an
