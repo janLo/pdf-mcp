@@ -1,7 +1,6 @@
 {
   "eligible_norm_count": 809,
   "environment": {
-    "executable": "/home/jan/devel/pdf-mcp-3/.venv/bin/python3",
     "implementation": "CPython",
     "machine": "x86_64",
     "packages": {

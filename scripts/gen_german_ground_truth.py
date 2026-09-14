@@ -624,7 +624,14 @@ def generate(
         "scenario_count": len(scenarios),
     }
     if environment is not None:
-        provenance["environment"] = environment()
+        env = environment()
+        # This provenance file is committed, unlike the gitignored
+        # benchmark_results/ payloads the other scripts write: drop the
+        # generating machine's interpreter path, which identifies a
+        # developer's home directory and says nothing the recorded
+        # python/platform versions don't.
+        env.pop("executable", None)
+        provenance["environment"] = env
     return ground_truth, provenance
 
 

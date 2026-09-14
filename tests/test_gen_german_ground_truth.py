@@ -6,6 +6,7 @@ tests/test_benchmark_cjk_keyword.py: pure functions over hand-built toc
 lists and page-text dicts.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -518,3 +519,23 @@ class TestGroundTruthShapeCompatibility:
             assert isinstance(s["relevant_pages"], list)
             assert "k" in s
             assert "arm" in s
+
+
+class TestCommittedProvenance:
+    """The provenance file ships in the repo, unlike the gitignored
+    benchmark_results/ payloads the other benchmark scripts write."""
+
+    PROVENANCE = (
+        Path(__file__).parent.parent
+        / "benchmark_data"
+        / "german_ground_truth_provenance.json"
+    )
+
+    def test_records_the_generating_environment(self):
+        env = json.loads(self.PROVENANCE.read_text(encoding="utf-8"))["environment"]
+        assert env["python"]
+        assert env["packages"]["fastembed"]
+
+    def test_does_not_leak_the_generating_interpreter_path(self):
+        env = json.loads(self.PROVENANCE.read_text(encoding="utf-8"))["environment"]
+        assert "executable" not in env
