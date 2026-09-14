@@ -151,8 +151,9 @@ budget option even though it doesn't pass the lift gate.
 
 ### Remote (OpenAI-compatible `/v1/embeddings`, via `lemond` on Vulkan)
 
-The actual remote-backend code from #47/#48 isn't merged to `develop` yet,
-so this arm used a standalone scorer
+The remote backend merged in #47 only accepts an endpoint serving a
+bge-small-compatible model, and the model-choice extension that would lift
+that restriction is not merged, so this arm used a standalone scorer
 (`scripts/gen_german_ground_truth.py`'s sibling logic, not committed —
 mirrors `_compute_metrics`/cosine-on-L2-normalized-vectors exactly) talking
 directly to `lemond`'s OpenAI-compatible endpoint. Pooling set per model via

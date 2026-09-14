@@ -190,6 +190,44 @@ class TestRunModel:
         )
         assert bem.server_module.pdf_config.embedding_model == original_model
 
+    def test_failing_warmup_search_raises_instead_of_scoring_zero(self, monkeypatch):
+        # Regression: pdf_search reports failures as {"error": ...} rather
+        # than raising. An unchecked warm-up search meant a model that could
+        # not search at all (bad model name, unreadable PDF, a pdf_config
+        # attribute _ConfigStub does not carry) scored 0.0 on every scenario
+        # and was reported as a real measurement instead of a failure.
+        gt = {
+            "pdfs": {
+                "x": {
+                    "url": "u",
+                    "title": "X",
+                    "page_count": 1,
+                    "scenarios": {"1a": {"query": "q", "relevant_pages": [1]}},
+                }
+            }
+        }
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/x.pdf", None))
+        monkeypatch.setattr(
+            bem, "pdf_search", lambda *a, **kw: {"error": "model load failed"}
+        )
+        with pytest.raises(RuntimeError, match="model load failed"):
+            bem.run_model(
+                model_name="does/not-exist",
+                gt=gt,
+                scenario_k={"1a": 5},
+            )
+        # ...and the real config is still restored afterwards.
+        assert not isinstance(bem.server_module.pdf_config, bem._ConfigStub)
+
+    def test_config_stub_carries_confidence_threshold(self):
+        # _ConfigStub must expose every pdf_config attribute server.py reads
+        # on the pdf_search path; a missing one surfaces as a search error.
+        stub = bem._ConfigStub("BAAI/bge-small-en-v1.5")
+        assert (
+            stub.confidence_threshold
+            == bem.server_module._SEMANTIC_CONFIDENCE_THRESHOLD
+        )
+
     def test_tolerates_pdf_with_no_scenarios_yet(self, monkeypatch):
         # Regression: benchmark_data/ground_truth.json carries PDFs with an
         # empty "scenarios" dict (entries reserved for a corpus not yet

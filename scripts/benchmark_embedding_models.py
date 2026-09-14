@@ -209,10 +209,20 @@ class _ConfigStub:
     Used to swap server_module.pdf_config per-run. Path/URL access checks
     are no-ops because the benchmark only reads public arxiv PDFs that the
     real config already permits.
+
+    The stub has to carry every attribute server.py reads off `pdf_config`
+    on the pdf_search path. A missing one raises inside pdf_search, which
+    returns it as an `{"error": ...}` dict rather than propagating -- so the
+    benchmark used to score such a model 0.0 and report it as a real,
+    successful measurement. `run_model` now checks the warm-up search's
+    result (see below) so that failure mode is loud, and
+    `confidence_threshold` mirrors server.py's own default so the
+    semantic/hybrid confidence annotation behaves as it does in production.
     """
 
     def __init__(self, model_name: str) -> None:
         self.embedding_model = model_name
+        self.confidence_threshold = server_module._SEMANTIC_CONFIDENCE_THRESHOLD
 
     def check_path(self, path: str) -> None:  # noqa: D401
         pass
@@ -270,12 +280,21 @@ def run_model(
                 k = scenario_k[first_sid]
                 first_query[pdf_key] = (s["query"], k)
                 t0 = time.perf_counter()
-                pdf_search(
+                warm = pdf_search(
                     pdf_paths[pdf_key],
                     s["query"],
                     mode=mode,
                     max_results=k,
                 )
+                # pdf_search reports failures as a result dict, not an
+                # exception. Left unchecked, a model that cannot search at all
+                # (bad model name, unreadable PDF, a pdf_config attribute this
+                # stub is missing) would score 0.0 on every scenario and be
+                # reported as a genuine measurement. Fail the model instead.
+                if "error" in warm:
+                    raise RuntimeError(
+                        f"warm-up search on {pdf_key} failed: {warm['error']}"
+                    )
                 embed_ms[pdf_key] = (time.perf_counter() - t0) * 1000
 
             # Run all scenarios
