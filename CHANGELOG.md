@@ -112,6 +112,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A page could be read as another page's text.** Since 3.0.0, once a
+  server process had extracted more than 256 pages, a later page could
+  occasionally come back carrying the text of a page extracted earlier,
+  from the same PDF or a different one. Search, read, excerpts, bounding
+  boxes and chart labels all used that text, and it was saved to the
+  cache, where it stayed until the PDF changed. Nothing in a response
+  showed it. Cached text, search indexes, embeddings and chart results
+  from 3.0.0 to 3.2.0 are discarded on first start and rebuilt on next
+  use, so the first searches after upgrading re-extract and re-embed.
+  ([#52](https://github.com/jztan/pdf-mcp/issues/52))
+
 - **OCR finds Tesseract installed outside `PATH`.** The Windows
   installer's default folder, and Homebrew on macOS when Claude Desktop
   starts the server, were invisible, so OCR reported Tesseract missing

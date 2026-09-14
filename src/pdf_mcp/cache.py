@@ -104,11 +104,15 @@ _FTS5_DE_SECTION_TABLE_SCHEMA = (
 # reading order for multi-column PDFs. v2: suppress the column path on sparse
 # grids (e.g. author/affiliation blocks on academic title pages) that v1
 # mis-read column-major — drops v1's scrambled title-page text/embeddings/FTS.
+# 14: purge text that v3.0.0 to v3.2.0 may have cached from the WRONG page:
+#     grouped blocks were memoized under id(lines), so after the in-process
+#     line cache evicted a page, a later page whose line list reused that
+#     address got the dead page's text. Affected rows cannot be told apart.
 # 13: ff/ffi ligature halves kept
 # 12: spanning bands must be wide, not just two-sided (table cells)
 # 11: spanning rows no longer split at the gutter
 # 10: layout-checked chunked embeddings (9 was interim)
-_EXTRACTION_VERSION = 13
+_EXTRACTION_VERSION = 14
 
 # Per-connection pragmas. Both reset on every open, unlike journal_mode which
 # is persistent in the database file (see _connect / _init_db).
