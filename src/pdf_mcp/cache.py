@@ -2926,7 +2926,7 @@ class PDFCache:
                     # querying pdf_search_fts_de directly, so this always
                     # agrees with what search_fts actually matched.
                     self._build_temp_page_fts(conn, path, cjk=False, de=True)
-                    sql = "SELECT page_num FROM doc_fts WHERE doc_fts MATCH ?"
+                    sql = "SELECT page_num, text FROM doc_fts WHERE doc_fts MATCH ?"
                     rows = conn.execute(sql, (escaped,)).fetchall()
                     if not rows:
                         # Mirror search_fts's OR retry so the "pages in
@@ -2936,15 +2936,13 @@ class PDFCache:
                             rows = conn.execute(sql, (alt,)).fetchall()
                 except sqlite3.OperationalError:
                     return {}
-            stemmer = _get_german_stemmer()
+            # Count against the temp index's text, which is already the
+            # `_german_normalize` stem stream. Re-stemming each matched
+            # page's raw text instead cost 4-5 s per query on a 490-page
+            # document once the OR fallback matched nearly every page.
             de_counts: dict[int, int] = {}
-            for (page_num,) in rows:
-                text = self.get_page_text(path, int(page_num)) or ""
-                count = sum(
-                    1
-                    for m in _GERMAN_TOKEN_RE.finditer(text)
-                    if stemmer.stemWord(m.group(0).lower()) in query_stems
-                )
+            for page_num, stemmed_text in rows:
+                count = sum(1 for tok in stemmed_text.split() if tok in query_stems)
                 if count > 0:
                     de_counts[int(page_num)] = count
             return de_counts
