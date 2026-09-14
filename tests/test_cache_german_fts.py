@@ -118,6 +118,40 @@ class TestGermanPageSearch:
         counts = de_cache.get_fts_page_counts(path, "kündigen")
         assert counts == {0: 2}
 
+    def test_get_fts_page_counts_does_not_restem_page_text(
+        self, de_cache, tmp_path, monkeypatch
+    ):
+        # Regression: counting re-stemmed the raw text of every matched page
+        # on every query. The OR fallback makes a long German question match
+        # nearly every page, so one query on the 490-page BGB stemmed ~234k
+        # words and took 4-5 s. Counts must come from the already-stemmed
+        # mirror text, so stemming work scales with the query, not the pages.
+        path = _touch_pdf(tmp_path, "long.pdf")
+        page = "Die Kündigung des Mietvertrags durch den Vermieter. " * 200
+        de_cache.save_pages_text(path, {i: page for i in range(20)})
+
+        import pdf_mcp.cache as cache_mod
+
+        real = cache_mod._get_german_stemmer()
+        stemmed = []
+
+        class _Counting:
+            def stemWord(self, word):
+                stemmed.append(word)
+                return real.stemWord(word)
+
+            def stemWords(self, words):
+                stemmed.extend(words)
+                return real.stemWords(words)
+
+        monkeypatch.setattr(cache_mod, "_get_german_stemmer", lambda: _Counting())
+        # 4 words, and "Pacht" is on no page: the AND form misses, so the
+        # OR fallback matches all 20 pages.
+        counts = de_cache.get_fts_page_counts(path, "Kündigung Mietvertrag Pacht Frist")
+
+        assert counts == {i: 400 for i in range(20)}
+        assert len(stemmed) < 50
+
     def test_numeric_query_matches_a_statute_citation_not_bare_bgb(
         self, de_cache, tmp_path
     ):
