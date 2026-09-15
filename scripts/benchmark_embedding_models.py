@@ -236,6 +236,7 @@ def run_model(
     gt: dict,
     scenario_k: dict[str, int],
     mode: str = "semantic",
+    score_pages: str = "relevant",
 ) -> dict:
     """
     Run all scenarios in the ground truth against a single embedding model.
@@ -243,16 +244,33 @@ def run_model(
     Side-effects: swaps server_module.pdf_config and server_module.cache
     for the duration of the call; both are restored on exit (even on error).
 
+    score_pages: which ground-truth field to score against.
+        "relevant" (default) -- scenario["relevant_pages"], unchanged
+            behaviour for every existing corpus.
+        "target" -- scenario["target_pages"] when present, falling back to
+            "relevant_pages" for scenarios that don't distinguish the two
+            (e.g. keyword_control). Some ground truths (semantic_xref) also
+            carry a "referrer_page" inside "relevant_pages" -- scoring
+            "relevant" there rewards finding the sentence the query was
+            lifted from as much as finding the actual answer; "target"
+            scores the answer only. See benchmark_data/german_embedding_
+            results.md for why target is the headline for that arm.
+
     Returns:
         {
           "model": str,
           "mode": str,
+          "score_pages": str,
           "embed_ms": {pdf_key: float, ...},   # cold-cache first-search time
           "p50_query_ms": float,               # warm-cache median over 3 runs
           "scenarios": [{"id": ..., "recall": ..., ...}, ...],
           "mrr": float,                        # mean RR across all scenarios
         }
     """
+    if score_pages not in ("relevant", "target"):
+        raise ValueError(
+            f"score_pages must be 'relevant' or 'target', got {score_pages!r}"
+        )
     original_config = server_module.pdf_config
     original_cache = server_module.cache
     try:
@@ -302,10 +320,13 @@ def run_model(
             for pdf_key, pdf in gt["pdfs"].items():
                 for sid, s in pdf["scenarios"].items():
                     k = scenario_k[sid]
+                    scored = s.get("target_pages") if score_pages == "target" else None
+                    if scored is None:
+                        scored = s["relevant_pages"]
                     metrics = _run_scenario(
                         pdf_paths[pdf_key],
                         s["query"],
-                        set(s["relevant_pages"]),
+                        set(scored),
                         k,
                         mode=mode,
                     )
@@ -316,6 +337,7 @@ def run_model(
                             "query": s["query"],
                             "k": k,
                             "relevant_pages": sorted(s["relevant_pages"]),
+                            "scored_pages": sorted(scored),
                             **metrics,
                         }
                     )
@@ -337,6 +359,7 @@ def run_model(
             return {
                 "model": model_name,
                 "mode": mode,
+                "score_pages": score_pages,
                 "embed_ms": embed_ms,
                 "p50_query_ms": p50,
                 "scenarios": scenarios,
@@ -429,6 +452,38 @@ def compute_verdict(
         "winner": None,
         "reason": "No challenger met the mrr_lift threshold",
     }
+
+
+def compute_ci_vs_baseline(results: list[dict], baseline_name: str) -> dict[str, dict]:
+    """Paired bootstrap 95% CI of (challenger MRR - baseline MRR) per model.
+
+    Pairs scenarios by "id" so the comparison is over the same queries even
+    if a model's `scenarios` list isn't in the same order. A model missing
+    a scenario the baseline has (or vice versa) drops that id from the
+    pairing rather than erroring -- keeps this usable on partial runs.
+
+    Returns {model_name: {"mean_diff", "lo", "hi", "includes_zero", "n"}},
+    one entry per non-baseline model in `results`.
+    """
+    from benchmark_bedrock_kb import bootstrap_diff_ci
+
+    baseline = next((r for r in results if r["model"] == baseline_name), None)
+    if baseline is None:
+        return {}
+    baseline_rr = {s["id"]: s["rr"] for s in baseline.get("scenarios", [])}
+
+    out: dict[str, dict] = {}
+    for r in results:
+        if r["model"] == baseline_name:
+            continue
+        challenger_rr = {s["id"]: s["rr"] for s in r.get("scenarios", [])}
+        shared_ids = [sid for sid in baseline_rr if sid in challenger_rr]
+        if not shared_ids:
+            continue
+        a = [challenger_rr[sid] for sid in shared_ids]
+        b = [baseline_rr[sid] for sid in shared_ids]
+        out[r["model"]] = bootstrap_diff_ci(a, b)
+    return out
 
 
 def _model_meta(name: str) -> dict:
@@ -554,6 +609,7 @@ def _save_results(
     file_timestamp: str,
     iso_timestamp: str,
     mode: str = "semantic",
+    score_pages: str = "relevant",
     models: list[str] | None = None,
     ground_truth: str = "benchmark_data/ground_truth.json",
 ) -> None:
@@ -568,6 +624,7 @@ def _save_results(
     data = {
         "timestamp": iso_timestamp,
         "mode": mode,
+        "score_pages": score_pages,
         "models_run": models or [r["model"] for r in results],
         "ground_truth": ground_truth,
         "environment": environment(),
@@ -677,6 +734,19 @@ def main() -> None:
         help="pdf_search mode to run every scenario in (default: semantic)",
     )
     parser.add_argument(
+        "--score-pages",
+        default="relevant",
+        choices=["relevant", "target"],
+        help=(
+            "Which ground-truth field to score against: 'relevant' (default, "
+            "unchanged behaviour) or 'target' -- scores semantic_xref-style "
+            "scenarios against scenario['target_pages'] instead of "
+            "['relevant_pages'], so finding the referrer page alone no "
+            "longer counts as a hit. Scenarios without 'target_pages' fall "
+            "back to 'relevant_pages' unchanged."
+        ),
+    )
+    parser.add_argument(
         "--arms",
         default=None,
         help=(
@@ -699,6 +769,11 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    # Resolve compute_ci_vs_baseline's import before any model is embedded:
+    # a broken import here should fail in under a second, not after a
+    # multi-hour run with nothing written to benchmark_results/.
+    import benchmark_bedrock_kb  # noqa: F401
 
     if args.patch_onnx_graph_opt:
         _patch_onnx_graph_optimization_level()
@@ -728,7 +803,10 @@ def main() -> None:
         f"  Models under test: {len(models_under_test)}  "
         f"(baseline: {baseline_name})"
     )
-    _p(f"  Mode: {args.mode}" + (f"  Arms: {', '.join(arms)}" if arms else ""))
+    _p(
+        f"  Mode: {args.mode}  Score pages: {args.score_pages}"
+        + (f"  Arms: {', '.join(arms)}" if arms else "")
+    )
     _p(
         f"  Gate: MRR lift ≥ {MRR_LIFT_THRESHOLD} "
         f"AND p50 latency ≤ {LATENCY_RATIO_THRESHOLD}x baseline"
@@ -754,7 +832,9 @@ def main() -> None:
     for m in models_under_test:
         _section(f"Running model: {m['name']}")
         try:
-            r = run_model(m["name"], gt, scenario_k, mode=args.mode)
+            r = run_model(
+                m["name"], gt, scenario_k, mode=args.mode, score_pages=args.score_pages
+            )
             results.append(r)
         except Exception as e:  # network/HF outage on first download
             _p(red(f"  Failed: {e}"))
@@ -762,6 +842,7 @@ def main() -> None:
                 {
                     "model": m["name"],
                     "mode": args.mode,
+                    "score_pages": args.score_pages,
                     "mrr": 0.0,
                     "p50_query_ms": float("inf"),
                     "embed_ms": {},
@@ -772,12 +853,23 @@ def main() -> None:
 
     verdict = compute_verdict(results, baseline_name)
     print_summary(results, verdict)
+    ci = compute_ci_vs_baseline(results, baseline_name)
+    if ci:
+        _section(f"95% CI of MRR lift vs baseline ({baseline_name})")
+        for name, c in ci.items():
+            flag = "excludes zero" if not c["includes_zero"] else "includes zero"
+            _p(
+                f"  {name}: {c['mean_diff']:+.3f} "
+                f"[{c['lo']:+.3f}, {c['hi']:+.3f}] ({flag}, n={c['n']})"
+            )
+    verdict["ci_vs_baseline"] = ci
     _save_results(
         results,
         verdict,
         file_ts,
         iso_ts,
         mode=args.mode,
+        score_pages=args.score_pages,
         models=[m["name"] for m in models_under_test],
         ground_truth=args.ground_truth,
     )

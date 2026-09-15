@@ -298,6 +298,152 @@ class TestRunModel:
         )
         assert result["p50_query_ms"] >= 0.0
 
+    def test_score_pages_target_scores_against_target_pages(self, monkeypatch):
+        # semantic_xref-style scenario: relevant_pages includes the referrer
+        # (page 9) as well as the real answer (page 1). Search returns the
+        # referrer first -- scoring "relevant" should hit at rank 1, scoring
+        # "target" should miss it (page 9 isn't in target_pages) and only
+        # hit if the answer page also appears in the (single-match) results.
+        gt = {
+            "pdfs": {
+                "x": {
+                    "url": "u",
+                    "title": "X",
+                    "page_count": 10,
+                    "scenarios": {
+                        "1a": {
+                            "query": "q",
+                            "relevant_pages": [1, 9],
+                            "target_pages": [1],
+                            "referrer_page": 9,
+                        }
+                    },
+                }
+            }
+        }
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/x.pdf", None))
+        monkeypatch.setattr(
+            bem, "pdf_search", lambda *a, **kw: {"matches": [{"page": 9}]}
+        )
+        relevant_result = bem.run_model(
+            model_name="BAAI/bge-small-en-v1.5",
+            gt=gt,
+            scenario_k={"1a": 5},
+            score_pages="relevant",
+        )
+        assert relevant_result["scenarios"][0]["rr"] == 1.0
+        assert relevant_result["scenarios"][0]["scored_pages"] == [1, 9]
+
+        target_result = bem.run_model(
+            model_name="BAAI/bge-small-en-v1.5",
+            gt=gt,
+            scenario_k={"1a": 5},
+            score_pages="target",
+        )
+        assert target_result["scenarios"][0]["rr"] == 0.0
+        assert target_result["scenarios"][0]["scored_pages"] == [1]
+        # relevant_pages is still reported unchanged for reference
+        assert target_result["scenarios"][0]["relevant_pages"] == [1, 9]
+
+    def test_score_pages_target_falls_back_to_relevant_without_target_pages(
+        self, monkeypatch
+    ):
+        # keyword_control-style scenario carries no target_pages -- must
+        # still score against relevant_pages, not silently score 0.
+        gt = {
+            "pdfs": {
+                "x": {
+                    "url": "u",
+                    "title": "X",
+                    "page_count": 5,
+                    "scenarios": {"1a": {"query": "q", "relevant_pages": [3]}},
+                }
+            }
+        }
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/x.pdf", None))
+        monkeypatch.setattr(
+            bem, "pdf_search", lambda *a, **kw: {"matches": [{"page": 3}]}
+        )
+        result = bem.run_model(
+            model_name="BAAI/bge-small-en-v1.5",
+            gt=gt,
+            scenario_k={"1a": 5},
+            score_pages="target",
+        )
+        assert result["scenarios"][0]["rr"] == 1.0
+        assert result["scenarios"][0]["scored_pages"] == [3]
+
+    def test_score_pages_rejects_unknown_value(self):
+        with pytest.raises(ValueError, match="score_pages"):
+            bem.run_model(
+                model_name="x", gt={"pdfs": {}}, scenario_k={}, score_pages="bogus"
+            )
+
+    def test_result_carries_score_pages(self, monkeypatch):
+        gt = {
+            "pdfs": {
+                "x": {
+                    "url": "u",
+                    "title": "X",
+                    "page_count": 1,
+                    "scenarios": {"1a": {"query": "q", "relevant_pages": [1]}},
+                }
+            }
+        }
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/x.pdf", None))
+        monkeypatch.setattr(
+            bem, "pdf_search", lambda *a, **kw: {"matches": [{"page": 1}]}
+        )
+        result = bem.run_model(
+            model_name="BAAI/bge-small-en-v1.5", gt=gt, scenario_k={"1a": 5}
+        )
+        assert result["score_pages"] == "relevant"
+
+
+class TestComputeCiVsBaseline:
+    def test_computes_paired_ci_per_challenger(self):
+        results = [
+            {
+                "model": "baseline",
+                "scenarios": [{"id": "1a", "rr": 1.0}, {"id": "1b", "rr": 0.5}],
+            },
+            {
+                "model": "challenger",
+                "scenarios": [{"id": "1a", "rr": 1.0}, {"id": "1b", "rr": 1.0}],
+            },
+        ]
+        ci = bem.compute_ci_vs_baseline(results, "baseline")
+        assert set(ci) == {"challenger"}
+        c = ci["challenger"]
+        assert c["n"] == 2
+        assert c["mean_diff"] == pytest.approx(0.25)
+        assert c["lo"] <= c["mean_diff"] <= c["hi"]
+
+    def test_missing_baseline_returns_empty(self):
+        results = [{"model": "only-one", "scenarios": [{"id": "1a", "rr": 1.0}]}]
+        assert bem.compute_ci_vs_baseline(results, "nonexistent") == {}
+
+    def test_pairs_only_shared_scenario_ids(self):
+        results = [
+            {"model": "baseline", "scenarios": [{"id": "1a", "rr": 1.0}]},
+            {
+                "model": "challenger",
+                "scenarios": [
+                    {"id": "1a", "rr": 0.5},
+                    {"id": "2a", "rr": 1.0},  # not in baseline -- excluded
+                ],
+            },
+        ]
+        ci = bem.compute_ci_vs_baseline(results, "baseline")
+        assert ci["challenger"]["n"] == 1
+
+    def test_no_shared_ids_omits_model(self):
+        results = [
+            {"model": "baseline", "scenarios": [{"id": "1a", "rr": 1.0}]},
+            {"model": "challenger", "scenarios": [{"id": "2a", "rr": 1.0}]},
+        ]
+        assert bem.compute_ci_vs_baseline(results, "baseline") == {}
+
 
 class TestComputeVerdict:
     def _model_result(self, name, mrr, p50, is_baseline=False):
@@ -651,6 +797,59 @@ class TestMainIntegration:
         assert data["mode"] == "keyword"
         assert data["models"][0]["mode"] == "keyword"
         assert all(m == "keyword" for m in captured_modes)
+
+    def test_score_pages_flag_in_saved_json(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        gt_path = tmp_path / "benchmark_data" / "ground_truth.json"
+        gt_path.parent.mkdir(parents=True)
+        gt_path.write_text(
+            json.dumps(
+                {
+                    "pdfs": {
+                        "fake": {
+                            "url": "https://example.com/x.pdf",
+                            "title": "X",
+                            "page_count": 5,
+                            "scenarios": {
+                                "1a": {
+                                    "query": "q1",
+                                    "relevant_pages": [1, 2],
+                                    "target_pages": [1],
+                                },
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(bem, "_resolve_path", lambda u: ("/tmp/fake.pdf", None))
+        monkeypatch.setattr(
+            bem, "pdf_search", lambda pdf, q, mode, max_results: {"matches": []}
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "benchmark_embedding_models.py",
+                "--ground-truth",
+                str(gt_path),
+                "--models",
+                "BAAI/bge-small-en-v1.5",
+                "--score-pages",
+                "target",
+            ],
+        )
+        bem._OUTPUT.clear()
+        bem.main()
+        data = json.loads(
+            next((tmp_path / "benchmark_results").glob("*.json")).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert data["score_pages"] == "target"
+        assert data["models"][0]["score_pages"] == "target"
+        assert data["models"][0]["scenarios"][0]["scored_pages"] == [1]
 
     def test_arms_flag_filters_scenarios(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
