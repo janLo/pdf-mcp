@@ -14,16 +14,19 @@ investigation surfaced — the embedding **normalization fix** (shipped to
 ([`german_embedding_results.md`](german_embedding_results.md), against a
 public statute PDF per
 [jztan/pdf-mcp#46](https://github.com/jztan/pdf-mcp/issues/46), 119
-scenarios) found bge-small's German semantic MRR (0.383) meaningfully below
-a keyword-search control on the same corpus (0.850) — a real gap, not a
-benchmark artifact — and two local models that meaningfully close it:
-`multilingual-e5-large` (+0.249 MRR) and, once a fastembed/onnxruntime
-graph-optimization incompatibility is worked around, the specific model the
-issue asked about, `jina-embeddings-v2-base-de` (+0.182 MRR). Neither
-clears this repo's existing 1.5x latency gate, so neither is a clean
-drop-in default yet — but both, surprisingly, beat the two remote models
-(`bge-m3`, `Qwen3-Embedding-0.6B`) also benchmarked there. The catalog is
-exhausted for *English*; it is not yet exhausted for German.
+scenarios, scored on the target norm page rather than the looser page set
+that also counts a citing referrer page as a hit) found bge-small's German
+hybrid MRR (0.222) meaningfully below three local models whose CIs exclude
+zero: `multilingual-e5-large` (+0.075 MRR), the specific model the issue
+asked about once a fastembed/onnxruntime graph-optimization incompatibility
+is worked around, `jina-embeddings-v2-base-de` (+0.073 MRR), and
+`paraphrase-multilingual-mpnet-base-v2` (+0.060 MRR). All three clear this
+repo's existing MRR-lift *and* 1.5x latency gates on hybrid-mode numbers —
+a change from the pre-review draft of this benchmark, which compared
+against semantic-only latency and wrongly reported neither as gate-passing.
+That does not make any of them the production default on its own (see the
+detail doc for caveats), but the catalog is not exhausted for German the
+way it is for English.
 
 Detail docs (kept): [`e5_prefix_results.md`](e5_prefix_results.md) ·
 [`mlx_backend_results.md`](mlx_backend_results.md) ·

@@ -1,11 +1,11 @@
-# German retrieval-quality benchmark (BGB) — local and remote models
+# German retrieval-quality benchmark (BGB)
 
 > Part of the [embedding evaluation summary](embedding_evaluation_summary.md).
 > Answers [jztan/pdf-mcp#46](https://github.com/jztan/pdf-mcp/issues/46): the
 > original numbers (bge-small MRR 0.075 on natural-language German queries,
 > vs 0.266 for a remote `bge-m3`) came from a private German commentary that
 > can't be shared. This is the same style of benchmark on a document anyone
-> can download, extended to also cover the remote-endpoint side of the issue.
+> can download.
 
 ## A note on process
 
@@ -29,6 +29,21 @@ the generator and the harness (word-boundary citation matching, a
 sentence-split truncation on legal abbreviations, an extent-ordering bug on
 duplicate norm numbers, and two silent-failure paths in the harness) — see
 the same commit history.
+
+A third, pre-merge review found that scoring `semantic_xref` against
+`relevant_pages` (which includes the referrer page the query sentence was
+lifted from, alongside the actual norm) mostly rewards finding that
+referrer sentence back: keyword-only search alone scores 0.858 on it, with
+86 of 119 top hits landing on the referrer rather than the cited norm.
+Retrieving the referrer is not *wrong* — the corpus generator deliberately
+counts it as relevant, see step 2 below — but it is a much easier target
+than the norm itself, so it inflates every model's headline number by a
+roughly model-independent amount. `scripts/gen_german_ground_truth.py`
+already emits both page sets per scenario (`target_pages` = norm only,
+`relevant_pages` = norm + referrer); `scripts/benchmark_embedding_models.py`
+now has a `--score-pages {relevant,target}` flag, and **target-only is the
+headline below**, with the original `relevant_pages` numbers kept as a
+secondary table for context.
 
 ## Corpus and method
 
@@ -69,11 +84,12 @@ ground truth carries **419 scenarios** total.
 
 Reproduce:
 ```
-python scripts/gen_german_ground_truth.py           # regenerates the ground truth
+python scripts/gen_german_ground_truth.py           # regenerates the ground truth (checks the sha256 pin first)
 python scripts/benchmark_embedding_models.py \
   --ground-truth benchmark_data/german_ground_truth.json \
-  --mode semantic --arms semantic_xref \
-  --models BAAI/bge-small-en-v1.5,<candidate>
+  --mode semantic --arms semantic_xref --score-pages target \
+  --models BAAI/bge-small-en-v1.5,<candidate> --baseline BAAI/bge-small-en-v1.5
+# --mode auto instead of semantic for the hybrid rows below.
 ```
 
 ## Keyword control arm (sanity check)
@@ -90,132 +106,101 @@ python scripts/benchmark_embedding_models.py \
 
 High and model-independent, as expected — this confirms the ground truth
 and German text extraction are sound. Any gap seen below on the semantic
-arm is a *model* limitation, not a corpus problem.
+and hybrid arms is a *model* limitation, not a corpus problem.
 
-## Semantic arm — 119 scenarios, `mode=semantic`, `k=5`
+**Note on FTS language:** the benchmark harness's `PDFCache` is built
+without `fts_language`, so the keyword/hybrid arms above run FTS5 with its
+default (non-German) stemmer, not the `[fts] language = "de"` config a
+real German deployment would set. This likely *understates* the
+keyword/hybrid numbers throughout this document.
 
-All runs were sequential (never overlapping) on an otherwise idle machine,
-so the latency numbers here are far less noisy than an earlier draft's
-(which ran under concurrent background load and showed ~2x self-spread on
-identical repeat runs). bge-small's own MRR was **perfectly stable at
-0.383** across all five runs below, each against a freshly re-embedded
-cache — a good reproducibility signal.
+## Semantic and hybrid arms — 119 scenarios, scored on `target_pages`, `k=5`
+
+All runs were sequential (never overlapping) on an otherwise idle machine.
+Each row below is a fresh cold-embed run (`--score-pages target`); bge-small
+reproduced the same MRR (0.164 semantic, 0.222 hybrid) across every pairing
+below, a good reproducibility signal. CIs are a paired bootstrap (2000
+resamples) of MRR lift vs. `BAAI/bge-small-en-v1.5`, matched per scenario —
+see `compute_ci_vs_baseline` in `scripts/benchmark_embedding_models.py`.
 
 ### Local (fastembed, CPU) — reproducible by anyone with this repo
 
-| Model | MRR | Δ vs bge-small | p50 query | Cold embed (490p) | Dim |
-|-------|-----|-----------------|-----------|--------------------|-----|
-| `BAAI/bge-small-en-v1.5` *(default, English)* | 0.383 | — | 48 ms | 140 s | 384 |
-| `intfloat/multilingual-e5-large` | **0.632** | **+0.249** | 87 ms | 807 s | 1024 |
-| `jinaai/jina-embeddings-v2-base-de` | **0.565** | **+0.182** | 83 ms | 356 s | 768 |
-| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 0.340 | −0.043 | 47 ms | 49 s | 384 |
-| `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | 0.313 | −0.070 | 58 ms | 220 s | 768 |
+| Model | Semantic MRR | Hybrid MRR | Δ hybrid vs bge-small | 95% CI (hybrid) | p50 (hybrid) | Latency ratio | Cold embed (490p) | Dim |
+|-------|--------------|------------|------------------------|------------------|--------------|----------------|--------------------|-----|
+| `BAAI/bge-small-en-v1.5` *(default, English)* | 0.164 | 0.222 | — | — | 121.2 ms | 1.00x | 139 s | 384 |
+| `intfloat/multilingual-e5-large` | **0.268** | **0.297** | **+0.075** | [+0.011, +0.139] | 162.1 ms | 1.34x | 819 s | 1024 |
+| `jinaai/jina-embeddings-v2-base-de` | **0.247** | **0.295** | **+0.073** | [+0.014, +0.132] | 161.6 ms | 1.33x | 360 s | 768 |
+| `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | 0.184 | 0.282 | +0.060 | [+0.002, +0.117] | 135.4 ms | 1.12x | 221 s | 768 |
+| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 0.163 | 0.253 | +0.031 | [−0.032, +0.098] (includes zero) | 129.6 ms | 1.07x | 49 s | 384 |
+
+Keyword search alone on this same arm's natural-language queries scores
+0.222 MRR — identical to bge-small's hybrid MRR, which is expected since
+hybrid mode folds a keyword pass into its ranking. Scored on the looser
+`relevant_pages` (referrer counts as a hit too), keyword alone reaches
+0.858, with 86 of 119 top hits landing on the referrer page rather than the
+norm — the gap this document's headline scoring now closes. Semantic-only
+referrer-top-1 counts (how often each model's #1 hit is the referrer
+rather than the target, before hybrid's keyword boost): bge-small 21/119,
+e5-large 45/119, jina-de 38/119, mpnet 12/119, MiniLM 18/119.
 
 **`jina-embeddings-v2-base-de` — the model the issue specifically asked
-about — DOES work locally, contrary to an earlier draft of this document.**
-It fails to load under fastembed's hardcoded
-`onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL` (a `graph_utils.cc`
-assertion in the `SimplifiedLayerNormFusion` pass, reproducible standalone
-with the raw ONNX file), but loads and embeds correctly at
-`ORT_ENABLE_EXTENDED` (one level down) or lower. `scripts/
-benchmark_embedding_models.py --patch-onnx-graph-opt` downgrades that one
-level, process-wide, for the duration of the benchmark run only (never
-touches `src/pdf_mcp/embedder.py`), and every number in the table above for
-this model was produced with it. Shipping this as a permanent fix for the
-production path would need `embedder.py` to accept a per-model session-
-options override — out of scope here, tracked as a fast-follow if `jina-de`
-is adopted.
+about — works locally**, with a one-line workaround. It fails to load
+under fastembed's hardcoded `onnxruntime.GraphOptimizationLevel
+.ORT_ENABLE_ALL` (a `graph_utils.cc` assertion in the
+`SimplifiedLayerNormFusion` pass, reproducible standalone with the raw ONNX
+file), but loads and embeds correctly at `ORT_ENABLE_EXTENDED` (one level
+down) or lower. `scripts/benchmark_embedding_models.py
+--patch-onnx-graph-opt` downgrades that one level, process-wide, for the
+duration of the benchmark run only (never touches `src/pdf_mcp/embedder
+.py`), and every number above for this model was produced with it.
+Shipping this as a permanent fix for the production path would need
+`embedder.py` to accept a per-model session-options override — out of
+scope here, tracked as a fast-follow if `jina-de` is adopted.
 
-**Both `multilingual-e5-large` and the patched `jina-de` clear the existing
-+0.05 MRR-lift gate**, but neither clears the existing 1.5x latency gate on
-p50 query time (e5-large 1.81x, jina-de 1.73x) — though note the gate is
-tuned for the *English* arxiv corpus's decision, not written with German in
-mind, so whether it should bind here is a real open question, not a
-foregone conclusion. Both run raw, with **no** `query:`/`passage:` prefix —
-matching pdf-mcp's actual production path today (no prefix mechanism
-exists in `embedder.py`) rather than either model's documented-optimal
-usage, so these numbers likely understate what they could do with prefix
-support, at the cost of the extra machinery
-`benchmark_data/e5_prefix_results.md` already found net-negative for
-English.
+**On hybrid MRR/latency, three of four candidates clear both of this
+repo's existing gates (+0.05 MRR lift, ≤1.5x p50 latency): `e5-large`
+(1.34x), `jina-de` (1.33x), and `mpnet` (1.12x)** — all three CIs exclude
+zero, so the lift is real, not noise. Only `MiniLM` fails, and only the
+MRR gate (+0.031, CI includes zero); its latency ratio (1.07x) would also
+pass. **`mpnet` is the standout on the gate's own terms**: cheapest to
+embed of the three passing candidates (221s vs e5-large's 819s), lowest
+latency ratio, and it clears cleanly — but it is not the model either the
+original issue or `jina-de`'s workaround investigation was about, so it
+hasn't had the same scrutiny as the other two here. This is a real,
+reproducible change to what the existing decision gate would recommend on
+this corpus (`compute_verdict` would pick `e5-large` as the highest-MRR
+passing challenger if all four ran together); it is presented here as a
+finding, not a recommendation to change the production default — that
+decision is the maintainer's, and the gate itself (see below) may not be
+the right one for German. All models run raw, with **no**
+`query:`/`passage:` prefix — matching pdf-mcp's actual production path
+today (no prefix mechanism exists in `embedder.py`) — so these numbers
+likely understate what prefix-aware models could do, at the cost of the
+extra machinery `benchmark_data/e5_prefix_results.md` already found
+net-negative for English. Hybrid-mode numbers also depend on
+`confidence_threshold`, pinned here to `server.py`'s current default; a
+future PR making that configurable should not be read as a regression
+against these numbers. The latency gate itself is tuned for the *English*
+arxiv corpus's decision, not written with German in mind, so whether it
+should bind the same way here is a real open question.
 
-**`MiniLM` and `mpnet` both score modestly below baseline** (−0.043,
-−0.070) — with 119 scenarios this is a real signal, not the single- or
-double-scenario noise a smaller sample would have produced, but the
-absolute gap is small. Multilingual training does not automatically help
-here, matching this repo's own English large-model screen's conclusion
-that bigger/broader doesn't automatically transfer to this retrieval
-regime. `MiniLM` is also markedly cheaper than the default (49s vs 140s
-cold embed) for a modest quality cost — worth keeping in mind as a
-budget option even though it doesn't pass the lift gate.
+`MiniLM` is also markedly cheaper to embed than the default (49s vs 139s
+cold) — worth keeping in mind as a budget option even though its lift
+doesn't clear the MRR gate.
 
-### Remote (OpenAI-compatible `/v1/embeddings`, via `lemond` on Vulkan)
+### Secondary: scored on `relevant_pages` (referrer counts as a hit), semantic only
 
-The remote backend merged in #47 only accepts an endpoint serving a
-bge-small-compatible model, and the model-choice extension that would lift
-that restriction is not merged, so this arm used a standalone scorer
-(`scripts/gen_german_ground_truth.py`'s sibling logic, not committed —
-mirrors `_compute_metrics`/cosine-on-L2-normalized-vectors exactly) talking
-directly to `lemond`'s OpenAI-compatible endpoint. Pooling set per model via
-`lemonade config set llamacpp.args="--pooling {cls,last}"` (bge-m3: CLS;
-Qwen3-Embedding: last-token, per each model's documented pooling).
+Kept for context on why the original arm design counted the referrer page
+as relevant at all (see "A note on process" above) — not the headline,
+per the referrer-leak discussion above.
 
-| Model | MRR | Δ vs bge-small | Cold embed (490p) | Dim |
-|-------|-----|-----------------|---------------------|-----|
-| `bge-m3` (Q8_0 GGUF) | 0.509 | +0.126 | 94 s | 1024 |
-| `Qwen3-Embedding-0.6B` (Q8_0 GGUF) | 0.451 | +0.068 | 265 s | 1024 |
-
-**The per-query timing for this arm is not directly comparable to the local
-table above** — the standalone scorer batches all queries into a handful of
-HTTP requests and divides total wall time by query count, rather than
-timing individual round-trips the way `run_latency_probe` does for the
-local models. Cold-embed time (a single large batch job either way) *is*
-comparable, and there both remote models embed 490 pages 1.5-3.7x faster
-than the local models scored above them in MRR (94s/265s vs e5-large's
-807s, jina-de's 356s) — the throughput case for a remote/accelerated
-backend the original private-corpus benchmark made still holds.
-
-**The genuinely surprising result: on this corpus, with the leak fixed,
-neither remote model is the best option.** Both local `e5-large` (0.632)
-and local `jina-de` (0.565) outperform both `bge-m3` (0.509) and
-`Qwen3-Embedding-0.6B` (0.451) on MRR. That inverts the headline framing of
-the original issue (private corpus: remote `bge-m3` 0.266 handily beat
-local `bge-small` 0.075). Plausible reasons, none confirmed here: this
-corpus's domain (statute text, short factual cross-references) differs
-substantially from the original commentary; the remote arm ran with no
-prefix support either, which may hurt `bge-m3`/`Qwen3-Embedding` more than
-it hurts `e5-large`/`jina-de` (uncertain, not tested); and 119 scenarios,
-while much better-powered than the original 29, is still a single corpus,
-single domain — the standard caveat this repo's own `docs/
-contributing.md` "Quality loop" raises about any single-sample benchmark.
-
-## What this means for the issue
-
-- **The corpus is fine; bge-small's German gap is real.** Keyword search on
-  the rubric arm (0.850) is high and model-independent; bge-small's
-  semantic MRR (0.383) sits well below every other model tested except the
-  two English-trained multilingual sentence-transformers.
-- **`jina-embeddings-v2-base-de` (ask #2) works locally**, with a one-line,
-  documented, process-scoped workaround for an `onnxruntime`
-  graph-optimization incompatibility, and it meaningfully closes the gap
-  (+0.182 MRR). It does not currently clear the existing MRR-lift *and*
-  latency combined gate, but it is now at least a real, testable candidate,
-  which it was not in an earlier draft of this benchmark.
-- **A local model can match or beat what the private-corpus numbers
-  suggested only a remote endpoint could do.** `e5-large` and `jina-de`
-  both outperform both remote models tested here. This doesn't mean the
-  remote-backend work (#47/#48) is unnecessary — the throughput numbers
-  above still favor remote/accelerated serving, and this is one corpus in
-  one domain — but it does mean "German needs a remote endpoint" is not
-  established by this benchmark; if anything it points the other way for
-  this corpus.
-- No model tested (local or remote) is a clean, gate-passing drop-in
-  default replacement for bge-small. Whether German support should key off
-  a *different* default model, a user-configurable one via the existing
-  BYOM path (already possible today for `jina-de` and `e5-large` with the
-  `--patch-onnx-graph-opt`-equivalent fix ported into `embedder.py`), or
-  the remote backend, is a real design decision this benchmark informs but
-  doesn't settle on its own.
+| Model | MRR | Δ vs bge-small |
+|-------|-----|-----------------|
+| `BAAI/bge-small-en-v1.5` *(default, English)* | 0.383 | — |
+| `intfloat/multilingual-e5-large` | 0.632 | +0.249 |
+| `jinaai/jina-embeddings-v2-base-de` | 0.565 | +0.182 |
+| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 0.340 | −0.043 |
+| `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | 0.313 | −0.070 |
 
 ## English regression check
 
