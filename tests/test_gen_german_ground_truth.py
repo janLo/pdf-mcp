@@ -10,6 +10,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import gen_german_ground_truth as ggt  # noqa: E402
@@ -530,6 +532,9 @@ class TestCommittedProvenance:
         / "benchmark_data"
         / "german_ground_truth_provenance.json"
     )
+    GROUND_TRUTH = (
+        Path(__file__).parent.parent / "benchmark_data" / "german_ground_truth.json"
+    )
 
     def test_records_the_generating_environment(self):
         env = json.loads(self.PROVENANCE.read_text(encoding="utf-8"))["environment"]
@@ -539,3 +544,162 @@ class TestCommittedProvenance:
     def test_does_not_leak_the_generating_interpreter_path(self):
         env = json.loads(self.PROVENANCE.read_text(encoding="utf-8"))["environment"]
         assert "executable" not in env
+
+    def test_answer_key_pin_matches_provenance(self):
+        # jztan's review: the sha256 pin lives on pdfs.bgb.sha256 in the
+        # answer key itself (not just the sibling provenance file) so
+        # gen_german_ground_truth.py can check it before doing any real
+        # work. Both files must agree.
+        gt_sha = json.loads(self.GROUND_TRUTH.read_text(encoding="utf-8"))["pdfs"][
+            "bgb"
+        ]["sha256"]
+        prov_sha = json.loads(self.PROVENANCE.read_text(encoding="utf-8"))["sha256"]
+        assert gt_sha == prov_sha
+        # Regression guard: if this ever changes, the BGB was regenerated
+        # against a different PDF than the one every number in
+        # benchmark_data/german_embedding_results.md was measured against.
+        # A deliberate regeneration must update that doc in the same PR.
+        assert (
+            gt_sha == "d75a31513293eaf31c166e0985fe1f8586158ceaf56614f3dfd50da183935786"
+        )
+
+    def test_provenance_script_version_is_2(self):
+        assert (
+            json.loads(self.PROVENANCE.read_text(encoding="utf-8"))["script_version"]
+            == 2
+        )
+
+
+class TestPinnedSha256:
+    def test_reads_pin_from_out_arg(self, tmp_path):
+        out = tmp_path / "gt.json"
+        out.write_text(
+            json.dumps({"pdfs": {"bgb": {"sha256": "abc123"}}}), encoding="utf-8"
+        )
+        assert ggt._pinned_sha256(str(out)) == "abc123"
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert ggt._pinned_sha256(str(tmp_path / "nope.json")) is None
+
+    def test_dash_falls_back_to_default_out_path(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        default = tmp_path / ggt._DEFAULT_OUT
+        default.parent.mkdir(parents=True)
+        default.write_text(
+            json.dumps({"pdfs": {"bgb": {"sha256": "xyz789"}}}), encoding="utf-8"
+        )
+        assert ggt._pinned_sha256("-") == "xyz789"
+
+    def test_malformed_json_raises_instead_of_silently_skipping(self, tmp_path):
+        # A corrupt answer key must not be treated as "no pin committed
+        # yet" -- that would defeat the point of pinning at all.
+        out = tmp_path / "gt.json"
+        out.write_text("not json", encoding="utf-8")
+        with pytest.raises(ValueError, match="not valid JSON"):
+            ggt._pinned_sha256(str(out))
+
+
+class TestMainExitsOnShaMismatch:
+    def _run_main(self, monkeypatch, argv):
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(SystemExit) as exc:
+            ggt.main()
+        return exc.value.code
+
+    def test_exits_2_on_mismatch(self, monkeypatch, tmp_path):
+        pdf = tmp_path / "BGB.pdf"
+        pdf.write_bytes(b"actual bytes")
+        out = tmp_path / "gt.json"
+        out.write_text(
+            json.dumps({"pdfs": {"bgb": {"sha256": "not-the-real-hash"}}}),
+            encoding="utf-8",
+        )
+        code = self._run_main(
+            monkeypatch,
+            [
+                "gen_german_ground_truth.py",
+                "--pdf",
+                str(pdf),
+                "--out",
+                str(out),
+            ],
+        )
+        assert code == 2
+
+    def test_download_failure_still_exits_1_not_2(self, monkeypatch, tmp_path):
+        # Exit 2 is reserved for "the source PDF moved" (a sha256
+        # mismatch); a download failure is a different, unrelated failure
+        # mode and must keep exit 1.
+        monkeypatch.setattr(
+            ggt, "_resolve_path", lambda url: (None, {"error": "network down"})
+        )
+        code = self._run_main(
+            monkeypatch,
+            ["gen_german_ground_truth.py"],
+        )
+        assert code == 1
+
+    def test_exits_1_on_malformed_out_file(self, monkeypatch, tmp_path):
+        pdf = tmp_path / "BGB.pdf"
+        pdf.write_bytes(b"actual bytes")
+        out = tmp_path / "gt.json"
+        out.write_text("not json", encoding="utf-8")
+        code = self._run_main(
+            monkeypatch,
+            [
+                "gen_german_ground_truth.py",
+                "--pdf",
+                str(pdf),
+                "--out",
+                str(out),
+            ],
+        )
+        assert code == 1
+
+    def test_force_overrides_mismatch(self, monkeypatch, tmp_path):
+        # --force should get past the pin check and proceed into generate(),
+        # which will fail for an unrelated reason (not a real BGB PDF) --
+        # that's fine, this only asserts the pin check itself didn't fire.
+        pdf = tmp_path / "BGB.pdf"
+        pdf.write_bytes(b"not a real pdf")
+        out = tmp_path / "gt.json"
+        out.write_text(
+            json.dumps({"pdfs": {"bgb": {"sha256": "not-the-real-hash"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "gen_german_ground_truth.py",
+                "--pdf",
+                str(pdf),
+                "--out",
+                str(out),
+                "--force",
+            ],
+        )
+        with pytest.raises(Exception) as exc:
+            ggt.main()
+        # Whatever generate() raised on garbage PDF bytes, it isn't the
+        # SystemExit(2) the pin check would have raised.
+        assert not (isinstance(exc.value, SystemExit) and exc.value.code == 2)
+
+    def test_no_prior_out_file_proceeds_past_the_check(self, monkeypatch, tmp_path):
+        pdf = tmp_path / "BGB.pdf"
+        pdf.write_bytes(b"not a real pdf")
+        out = tmp_path / "does_not_exist_yet.json"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "gen_german_ground_truth.py",
+                "--pdf",
+                str(pdf),
+                "--out",
+                str(out),
+            ],
+        )
+        with pytest.raises(Exception) as exc:
+            ggt.main()
+        assert not (isinstance(exc.value, SystemExit) and exc.value.code == 2)

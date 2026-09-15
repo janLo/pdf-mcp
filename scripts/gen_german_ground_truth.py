@@ -42,11 +42,16 @@ Two scenarios per sampled norm ("arms"):
 Output: benchmark_data/german_ground_truth.json, in the exact
 ground_truth.json shape scripts/benchmark_embedding_models.py already
 consumes (plus additive "k"/"arm"/"norm" keys the current harness code
-ignores). A sibling benchmark_data/german_ground_truth_provenance.json
-records the seed, skip counts by reason, and the source PDF's sha256 --
+ignores). The answer key pins the source PDF's sha256 directly on
+pdfs.bgb.sha256; a sibling benchmark_data/german_ground_truth_provenance
+.json duplicates it alongside the seed and skip counts by reason.
 gesetze-im-internet.de republishes the BGB whenever the law changes,
-silently shifting every page number, so a hash mismatch on a later run is
-reported loudly rather than producing quietly-wrong page numbers.
+silently shifting every page number, so before doing any real work this
+script hashes the resolved PDF and compares it against the pin already
+committed in --out: a mismatch exits 2 (not 1 -- reserved for "the
+upstream document moved, regenerating would silently invalidate the
+ground truth", distinct from a download failure) instead of producing
+quietly-wrong page numbers. Pass --force to regenerate anyway.
 
 Run:
     python scripts/gen_german_ground_truth.py
@@ -78,6 +83,7 @@ except ImportError:  # pragma: no cover - scripts/ always on sys.path when run
     environment = None  # type: ignore[assignment]
 
 BGB_URL = "https://www.gesetze-im-internet.de/bgb/BGB.pdf"
+_DEFAULT_OUT = "benchmark_data/german_ground_truth.json"
 
 # Matches a single-norm outline entry: "§ 611a\xa0Arbeitsvertrag".
 _ANCHOR_RE = re.compile(r"^§\s*(\d+[a-z]?)\s+(.+)$")
@@ -556,6 +562,33 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _pinned_sha256(out_arg: str) -> str | None:
+    """Read pdfs.bgb.sha256 from the currently committed answer key.
+
+    Uses `out_arg` when it names a real file; falls back to the default
+    ground-truth path when writing to stdout ('-'), so `--out -` still
+    gets checked against whatever pin is currently committed instead of
+    silently skipping the check.
+
+    A missing file returns None (nothing committed yet -- proceed, there
+    is nothing to protect). A file that exists but fails to parse raises
+    instead: silently treating a corrupt answer key as "no pin, proceed"
+    would defeat the whole point of pinning -- the one case this check
+    exists for is "don't let a bad state through unnoticed".
+    """
+    path = Path(out_arg) if out_arg != "-" else Path(_DEFAULT_OUT)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"{path} exists but is not valid JSON -- refusing to treat this "
+            "as 'no pin committed yet'. Fix or remove it before rerunning."
+        ) from e
+    return data.get("pdfs", {}).get("bgb", {}).get("sha256")
+
+
 def generate(
     pdf_path: str,
     n: int,
@@ -603,12 +636,14 @@ def generate(
         if close:
             close()
 
+    pdf_sha256 = _sha256(Path(pdf_path))
     ground_truth = {
         "pdfs": {
             "bgb": {
                 "url": BGB_URL,
                 "title": "Bürgerliches Gesetzbuch (BGB)",
                 "page_count": page_count,
+                "sha256": pdf_sha256,
                 "scenarios": scenarios,
             }
         }
@@ -616,8 +651,8 @@ def generate(
     provenance = {
         "seed": seed,
         "sample_size": n,
-        "script_version": 1,
-        "sha256": _sha256(Path(pdf_path)),
+        "script_version": 2,
+        "sha256": pdf_sha256,
         "skip_counts": skips.counts,
         "eligible_norm_count": len(eligible),
         "sampled_norm_count": len(sampled),
@@ -653,7 +688,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--out",
-        default="benchmark_data/german_ground_truth.json",
+        default=_DEFAULT_OUT,
         help="Output path ('-' for stdout)",
     )
     parser.add_argument(
@@ -665,9 +700,9 @@ def main() -> None:
         "--force",
         action="store_true",
         help=(
-            "Overwrite the existing ground truth even if the source PDF's "
-            "sha256 has changed since it was generated (page numbers may "
-            "then be stale)"
+            "Regenerate even if the source PDF's sha256 no longer matches "
+            "the pin committed in --out (page numbers may then be stale). "
+            "Without this, a mismatch exits 2."
         ),
     )
     args = parser.parse_args()
@@ -680,6 +715,24 @@ def main() -> None:
             print(f"Failed to download {BGB_URL}: {err['error']}", file=sys.stderr)
             sys.exit(1)
         pdf_path = resolved
+
+    try:
+        pinned = _pinned_sha256(args.out)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    if pinned and not args.force:
+        actual = _sha256(Path(pdf_path))
+        if actual != pinned:
+            print(
+                f"ERROR: BGB.pdf sha256 mismatch (pinned {pinned}, resolved "
+                f"{actual}). The BGB was likely amended, which shifts page "
+                "numbers throughout -- regenerating would silently "
+                "invalidate every number measured against the committed "
+                "ground truth. Pass --force to regenerate anyway.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     force_include = (
         [f.strip() for f in args.force_include.split(",") if f.strip()]
@@ -704,6 +757,11 @@ def main() -> None:
             except (FileNotFoundError, json.JSONDecodeError):
                 pass
         if prev_hash and prev_hash != provenance["sha256"] and not args.force:
+            # Belt-and-braces: the early pin check above already reads
+            # pdfs.bgb.sha256 out of the same --out file before generate()
+            # runs, so this should be unreachable in practice. Kept so the
+            # provenance file's own sha256 (a second, independent source)
+            # is never allowed to disagree with what gets written.
             print(
                 f"ERROR: source PDF sha256 changed ({prev_hash} -> "
                 f"{provenance['sha256']}). The BGB was likely amended, "
@@ -713,7 +771,7 @@ def main() -> None:
                 "Pass --force to regenerate anyway.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(2)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(gt_json, encoding="utf-8")

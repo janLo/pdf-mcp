@@ -17,7 +17,7 @@
   "sample_size": 300,
   "sampled_norm_count": 300,
   "scenario_count": 419,
-  "script_version": 1,
+  "script_version": 2,
   "seed": 20260913,
   "sha256": "d75a31513293eaf31c166e0985fe1f8586158ceaf56614f3dfd50da183935786",
   "skip_counts": {
