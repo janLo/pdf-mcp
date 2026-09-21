@@ -368,6 +368,39 @@ class TestCacheInvalidation:
 
         unlink_quietly(pdf_path)
 
+    def test_negative_one_ttl_never_expires(self, tmp_path):
+        """ttl_hours=-1 disables automatic expiry; clear_all() still purges."""
+        cache = PDFCache(cache_dir=tmp_path, ttl_hours=-1)
+
+        import tempfile
+
+        import pymupdf
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.close()
+            doc = pymupdf.open()
+            doc.new_page()
+            doc.save(f.name)
+            doc.close()
+            pdf_path = f.name
+
+        cache.save_metadata(pdf_path, 1, {}, [])
+
+        # Backdate far enough that any positive ttl_hours would expire it.
+        import sqlite3
+
+        with sqlite3.connect(cache.db_path) as conn:
+            conn.execute("UPDATE pdf_metadata SET accessed_at = '2000-01-01'")
+
+        assert cache.clear_expired() == 0
+        assert cache.get_stats()["total_files"] == 1
+
+        # Manual purge is unaffected by the sentinel.
+        assert cache.clear_all() == 1
+        assert cache.get_stats()["total_files"] == 0
+
+        unlink_quietly(pdf_path)
+
     def test_save_page_images_cleans_stale_files(self, cache, sample_pdf, tmp_path):
         """Re-saving images for a page deletes old PNGs first."""
         images_dir = tmp_path / "images"

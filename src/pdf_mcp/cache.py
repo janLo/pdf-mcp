@@ -521,7 +521,9 @@ class PDFCache:
 
         Args:
             cache_dir: Directory to store cache database. Defaults to ~/.cache/pdf-mcp
-            ttl_hours: Time-to-live for cache entries in hours
+            ttl_hours: Time-to-live for cache entries in hours. -1 means
+                never expire automatically -- clear_expired() becomes a
+                no-op; clear_all() (manual purge) is unaffected.
             images_dir: Directory to store extracted images.
                 Defaults to cache_dir/images
             fts_language: None (default porter/English FTS) or "de" to
@@ -2346,6 +2348,14 @@ class PDFCache:
         Returns:
             Number of files cleared
         """
+        if self.ttl_hours < 0:
+            # -1 sentinel: never expire automatically. No cutoff to
+            # compute -- there is no way to spell "infinity" as an hour
+            # count for datetime('now', ?), so this skips the query
+            # entirely rather than approximating with a huge number.
+            # clear_all() (manual purge) is a separate code path and
+            # still works normally.
+            return 0
         with self._connect() as conn:
             # Get expired file paths. Compute the cutoff with SQLite's own
             # clock — accessed_at is written via CURRENT_TIMESTAMP (UTC,

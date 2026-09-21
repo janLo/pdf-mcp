@@ -54,14 +54,18 @@ class TestTtlEnv:
         with pytest.raises(ValueError, match="must be an integer"):
             _ttl_hours_from_env()
 
-    def test_negative_fails_loud(self, monkeypatch):
+    def test_negative_one_means_never_expire(self, monkeypatch):
         monkeypatch.setenv("PDF_MCP_CACHE_TTL", "-1")
-        with pytest.raises(ValueError, match=r"must be in \[0, 8760\]"):
+        assert _ttl_hours_from_env() == -1
+
+    def test_below_sentinel_fails_loud(self, monkeypatch):
+        monkeypatch.setenv("PDF_MCP_CACHE_TTL", "-2")
+        with pytest.raises(ValueError, match=r"must be -1 .* or in \[0, 8760\]"):
             _ttl_hours_from_env()
 
     def test_over_max_fails_loud(self, monkeypatch):
         monkeypatch.setenv("PDF_MCP_CACHE_TTL", "9999")
-        with pytest.raises(ValueError, match=r"must be in \[0, 8760\]"):
+        with pytest.raises(ValueError, match=r"must be -1 .* or in \[0, 8760\]"):
             _ttl_hours_from_env()
 
 

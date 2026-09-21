@@ -196,6 +196,13 @@ def _ttl_hours_from_env() -> int:
     Fails loud (ValueError at startup) on non-integer or out-of-range
     input rather than silently falling back, so a typo in the user's
     MCP client config surfaces immediately instead of being ignored.
+
+    -1 is a sentinel for "never expire automatically" -- PDFCache.
+    clear_expired() skips its cutoff query entirely rather than computing
+    one from a very large ttl_hours (there is no way to spell "infinity"
+    as a plain hour count). Manual purge via pdf_cache_clear(expired_only
+    =False) is unaffected either way -- this only disables the automatic
+    startup/expired_only=True sweep, not the ability to clear the cache.
     """
     raw = os.environ.get("PDF_MCP_CACHE_TTL")
     if raw is None or raw.strip() == "":
@@ -204,10 +211,10 @@ def _ttl_hours_from_env() -> int:
         value = int(raw)
     except ValueError as exc:
         raise ValueError(f"PDF_MCP_CACHE_TTL must be an integer (got {raw!r})") from exc
-    if value < 0 or value > _MAX_CACHE_TTL_HOURS:
+    if value < -1 or value > _MAX_CACHE_TTL_HOURS:
         raise ValueError(
-            f"PDF_MCP_CACHE_TTL must be in [0, {_MAX_CACHE_TTL_HOURS}] hours "
-            f"(up to one year; got {value})"
+            f"PDF_MCP_CACHE_TTL must be -1 (never expire) or in "
+            f"[0, {_MAX_CACHE_TTL_HOURS}] hours (up to one year; got {value})"
         )
     return value
 

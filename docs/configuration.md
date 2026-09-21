@@ -85,7 +85,10 @@ count — the result is a hint, not an exact tally.
 # Cache directory (default: ~/.cache/pdf-mcp)
 PDF_MCP_CACHE_DIR=/path/to/cache
 
-# Cache TTL in hours (default: 24)
+# Cache TTL in hours (default: 24, max: 8760/one year).
+# -1 disables automatic expiry entirely ("never expire automatically") --
+# pdf_cache_clear(expired_only=False) remains the only way to remove
+# entries. 0 means the opposite: expire immediately.
 PDF_MCP_CACHE_TTL=48
 
 # Max worker processes for parallel OCR / rendering in pdf_read_pages
@@ -613,7 +616,9 @@ substring matching; `server_info` reports this as
 **Cache invalidation:**
 - Automatic when file modification time changes
 - Manual via the `pdf_cache_clear` tool
-- TTL: 24 hours (configurable)
+- TTL: 24 hours (configurable via `PDF_MCP_CACHE_TTL`, up to one year;
+  `-1` disables automatic expiry entirely — `pdf_cache_clear` stays the
+  only way to remove entries)
 
 ## Network requests
 
